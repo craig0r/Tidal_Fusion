@@ -25,7 +25,11 @@ if [ "$EUID" -eq 0 ]; then
     exit 1
 fi
 
-# 1. Check Python
+# 1. Clean previous builds (Aggressive Clean)
+echo "Cleaning previous build artifacts..."
+rm -rf build dist "$APP_NAME.spec" __pycache__
+
+# 2. Check Python
 if ! command -v python3 &> /dev/null; then
     echo -e "${RED}Error: Python 3 is not installed or not found in PATH.${NC}"
     echo "Please install Python 3 and try again."
@@ -33,7 +37,7 @@ if ! command -v python3 &> /dev/null; then
 fi
 echo -e "${GREEN}✓ Python 3 found${NC}"
 
-# 2. Setup/Check venv & Dependencies
+# 3. Setup/Check venv & Dependencies
 echo -e "${BLUE}Checking dependencies...${NC}"
 
 # Check for PyInstaller
@@ -53,22 +57,21 @@ if [ -f "$REQUIREMENTS" ]; then
     pip3 install --user --upgrade -r "$REQUIREMENTS" || { echo -e "${RED}Failed to install requirements.${NC}"; exit 1; }
 else
     echo -e "${RED}Warning: $REQUIREMENTS not found in $(pwd).${NC}"
-    # Continuing anyway as they might be installed
 fi
 
-# 3. Build
+# 4. Build
 echo -e "${BLUE}Building executable...${NC}"
 # Use python -m PyInstaller to be safe about path
 python3 -m PyInstaller --clean --onefile --name "$APP_NAME" "$SRC_FILE"
 
-# 4. Install
+# 5. Install
 echo -e "${BLUE}Installing to $INSTALL_DIR...${NC}"
 echo "You may be prompted for your password to copy the binary."
 
 if sudo cp "dist/$APP_NAME" "$INSTALL_DIR/"; then
     sudo chmod +x "$INSTALL_DIR/$APP_NAME"
     
-    # 5. Cleanup
+    # 6. Cleanup
     echo "Cleaning up build artifacts..."
     rm -rf build dist "$APP_NAME.spec"
 

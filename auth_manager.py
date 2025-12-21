@@ -7,7 +7,6 @@ import webbrowser
 import tidalapi
 
 # Constants
-# Constants
 def get_config_dir():
     """Returns the configuration directory based on OS."""
     if platform.system() == 'Windows':
@@ -26,10 +25,13 @@ def get_config_dir():
         except Exception as e:
             print(f"Warning: Could not create config dir {path}: {e}", file=sys.stderr)
             
+    # DEBUG: verify path
+    # print(f"DEBUG: Config Dir resolved to: {path}")
     return path
 
 CONFIG_DIR = get_config_dir()
 TOKEN_FILE = CONFIG_DIR / 'tidal_tokens.json'
+CONFIG_FILE = CONFIG_DIR / 'tidal_config.json'
 
 def save_tokens(session):
     """Save session tokens to a local file with secure permissions."""
