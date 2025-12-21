@@ -32,3 +32,4 @@ tidal_config.json
 # IDEs
 .vscode/
 .idea/
+explore_tidalapi.py
