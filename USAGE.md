@@ -44,8 +44,8 @@ Configuration:
 tidal-fusion -c --mode basic
 ```
 
-### Flow Mode (`--mode flow`)
-Intelligent algorithm designed to replicate "Deezer Flow". Interleaves tracks from three buckets:
+### Fusion Mode (`--mode fusion`)
+Intelligent algorithm designed to blend tracks for the perfect listening session. Interleaves tracks from three buckets:
 1.  **Comfort (40%)**: Favorites (> 6 months old).
 2.  **Habit (30%)**: Recent history.
 3.  **Adventure (30%)**: Discovery mixes.
@@ -59,5 +59,5 @@ Intelligent algorithm designed to replicate "Deezer Flow". Interleaves tracks fr
 
 **Example**:
 ```bash
-tidal-fusion --mode flow -n --limit 100
+tidal-fusion --mode fusion -n --limit 100
 ```

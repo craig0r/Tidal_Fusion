@@ -5,7 +5,7 @@
 ## Features
 - **Modes**:
     - **Basic**: Aggregates tracks from your Daily Discovery and Mixes.
-    - **Flow**: A sophisticated algorithm blending **Comfort** (Old Favorites), **Habit** (Recent History), and **Adventure** (New Discoveries) with BPM smoothing.
+    - **Fusion**: A sophisticated algorithm blending **Comfort** (Old Favorites), **Habit** (Recent History), and **Adventure** (New Discoveries) with BPM smoothing.
 - **Smart Management**: updates your playlist without deleting it (preserving external IDs).
 - **Cross-Platform**: Runs on Linux, macOS, and Windows.
 
@@ -18,7 +18,7 @@
    ```
 3. **Run**:
    ```bash
-   tidal-fusion --mode flow
+   tidal-fusion --mode fusion
    ```
 
 ## Documentation

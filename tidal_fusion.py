@@ -23,8 +23,8 @@ DEFAULT_CONFIG = {
             "new_arrivals": True,
             "my_mixes": True
         },
-        "flow": {
-            # Future flow config
+        "fusion": {
+            # Future fusion config
         }
     }
 }
@@ -96,11 +96,11 @@ def configure_basic_mode(config):
             return
 
 
-def configure_flow_mode(config):
-    """Interactive menu for Flow Mode."""
+def configure_fusion_mode(config):
+    """Interactive menu for Fusion Mode."""
     while True:
-        print("\n--- Flow Mode Configuration ---")
-        print("No configurable options for Flow mode yet.")
+        print("\n--- Fusion Mode Configuration ---")
+        print("No configurable options for Fusion mode yet.")
         print("1. Save and Exit")
         print("2. Exit without Saving")
         
@@ -122,8 +122,8 @@ def configure_global(config):
         choice = input("Enter choice: ").strip()
         
         if choice == '1':
-            m = input("Enter default mode (basic/flow): ").strip().lower()
-            if m in ['basic', 'flow']:
+            m = input("Enter default mode (basic/fusion): ").strip().lower()
+            if m in ['basic', 'fusion']:
                 config['default_mode'] = m
             else:
                 print("Invalid mode.")
@@ -194,11 +194,12 @@ def fetch_basic_tracks(session, config):
 
     return list(found_tracks.values())
 
-def fetch_flow_tracks(session, config, limit=200):
+def fetch_fusion_tracks(session, config, limit=200):
     """
-    Flow logic: Comfort (40%), Habit (30%), Adventure (30%).
+    Fetch and interleave tracks for 'Fusion' mode.
+    Fusion logic: Comfort (40%), Habit (30%), Adventure (30%).
     """
-    print(f"Flow Mode: Generating {limit} tracks...")
+    print(f"Fusion Mode: Generating {limit} tracks...")
     
     # 1. Fetch Candidates
     favorites = []
@@ -372,7 +373,7 @@ def fetch_flow_tracks(session, config, limit=200):
     if bpms:
         avg_bpm = sum(bpms) / len(bpms)
 
-    print(f"Flow Generation: {len(final_list)} tracks.")
+    print(f"Fusion Generation: {len(final_list)} tracks.")
     print(f"  Composition: {len(bucket_comfort)} Classics, {len(bucket_habit)} Current Rotation, {len(bucket_adventure)} New Discoveries.")
     print(f"  Vibe Check: Average BPM: {int(avg_bpm)} | Swaps made: {swaps_made} | Replay Gain Adjusted")
     
@@ -477,8 +478,8 @@ def main():
     parser.add_argument('-h', '--help', action='store_true', help="Show help")
     
     # Modifiers
-    parser.add_argument('--mode', type=str, help="Select mode (basic, flow)")
-    parser.add_argument('-m', '--limit', type=int, default=200, help="Track limit (Flow mode)")
+    parser.add_argument('--mode', type=str, help="Select mode (basic, fusion)")
+    parser.add_argument('-m', '--limit', type=int, default=200, help="Track limit (Fusion mode)")
 
     args = parser.parse_args()
     
@@ -507,8 +508,8 @@ def main():
             print("  -n, --new     : Create/Reset playlist (Default)")
             print("  -a, --append  : Append to playlist")
             print("  -c, --config  : Configure modes")
-            print("  --mode <name> : Select mode (basic, flow)")
-            print("  -m, --limit   : Set max tracks (Flow)")
+            print("  --mode <name> : Select mode (basic, fusion)")
+            print("  -m, --limit   : Set max tracks (Fusion)")
         return
 
     # 1. Login
@@ -522,8 +523,8 @@ def main():
             # Mode specific config
             if args.mode == 'basic':
                 configure_basic_mode(config)
-            elif args.mode == 'flow':
-                configure_flow_mode(config)
+            elif args.mode == 'fusion':
+                configure_fusion_mode(config)
             else:
                 print(f"Unknown mode: {args.mode}")
             save_config(config)
@@ -549,13 +550,13 @@ def main():
     tracks = []
     if mode == 'basic':
         tracks = fetch_basic_tracks(session, config)
-    elif mode == 'flow':
-        tracks = fetch_flow_tracks(session, config, args.limit)
+    elif mode == 'fusion':
+        tracks = fetch_fusion_tracks(session, config, args.limit)
     else:
         print(f"Unknown mode: {mode}")
         return
 
-    # Shuffle for basic (Flow does its own interleaving)
+    # Shuffle for basic (Fusion does its own interleaving)
     if mode == 'basic':
         random.shuffle(tracks)
         

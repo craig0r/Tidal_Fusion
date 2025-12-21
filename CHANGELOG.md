@@ -5,8 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased] - 2025-12-20
 
 ### Added
-- **Flow Mode** (`--mode flow`):
-    - Implemented a new intelligent generation algorithm inspired by "Deezer Flow".
+- **Fusion Mode** (`--mode fusion`):
+    - Implemented a new intelligent generation algorithm.
     - **Buckets**:
         - *Comfort*: Favorites older than 6 months (Nostalgia).
         - *Habit*: Recently played tracks (History).
@@ -17,7 +17,7 @@ All notable changes to this project will be documented in this file.
     - **Reporting**: Detailed console output showing composition percentages and average BPM.
 - **CLI Overhaul**:
     - Introduced mutually exclusive actions: `-n` (New/Reset), `-a` (Append), `-c` (Config).
-    - Added `--mode` argument to switch between `basic` and `flow` generation.
+    - Added `--mode` argument to switch between `basic` and `fusion` generation.
     - Decoupled `-h/--help` for context-aware help messages.
 - **Configuration Management**:
     - Centralized configuration and authentication storage.

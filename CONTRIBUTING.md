@@ -8,7 +8,7 @@ If you encounter a bug or have a feature request, please use the GitHub Issue Tr
 ### Bug Reports
 When reporting a bug, please include:
 - Your OS and Python version.
-- The command you ran (e.g., `tidal-fusion --mode flow -n`).
+- The command you ran (e.g., `tidal-fusion --mode fusion -n`).
 - The output or error message (please redact any personal tokens/IDs).
 - Detailed steps to reproduce the issue.
 
