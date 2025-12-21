@@ -15,8 +15,7 @@ The installer scripts will attempt to install dependencies (including `tidalapi`
    chmod +x install.sh
    ./install.sh
    ```
-   - **Root/Sudo**: Installs to `/usr/local/bin`.
-   - **User**: Installs to `~/.local/bin` (Ensure this is in your PATH).
+   **Note**: Do not run as `sudo`. The script will prompt you for your password when installing the binary to `/usr/local/bin`.
 
 ### Windows
 1. Double-click `install.bat`.
