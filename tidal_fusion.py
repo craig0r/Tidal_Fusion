@@ -10,7 +10,8 @@ import tidalapi
 import auth_manager
 
 # Constants
-CONFIG_FILE = pathlib.Path('tidal_config.json')
+# Constants
+CONFIG_FILE = auth_manager.CONFIG_DIR / 'tidal_config.json'
 DEFAULT_PLAYLIST_NAME = "Tidal Fusion"
 MIX_NAMES_GENERATED = [f"My Mix {i}" for i in range(1, 9)]
 

@@ -40,7 +40,7 @@ echo -e "${BLUE}Checking dependencies...${NC}"
 if ! command -v pyinstaller &> /dev/null; then
     echo "PyInstaller not found. Installing..."
     # Install to user location to avoid root requirement
-    pip3 install --user pyinstaller || { echo -e "${RED}Failed to install pyinstaller.${NC}"; exit 1; }
+    pip3 install --user --upgrade pyinstaller || { echo -e "${RED}Failed to install pyinstaller.${NC}"; exit 1; }
     
     # Ensure local bin is in path for this session if needed
     FULL_PATH="$(python3 -m site --user-base)/bin"
@@ -49,8 +49,8 @@ fi
 
 # Check for Requirements
 if [ -f "$REQUIREMENTS" ]; then
-    echo "Installing requirements..."
-    pip3 install --user -r "$REQUIREMENTS" || { echo -e "${RED}Failed to install requirements.${NC}"; exit 1; }
+    echo "Installing/Updating requirements..."
+    pip3 install --user --upgrade -r "$REQUIREMENTS" || { echo -e "${RED}Failed to install requirements.${NC}"; exit 1; }
 else
     echo -e "${RED}Warning: $REQUIREMENTS not found in $(pwd).${NC}"
     # Continuing anyway as they might be installed

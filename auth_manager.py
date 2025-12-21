@@ -7,7 +7,29 @@ import webbrowser
 import tidalapi
 
 # Constants
-TOKEN_FILE = pathlib.Path('tidal_tokens.json')
+# Constants
+def get_config_dir():
+    """Returns the configuration directory based on OS."""
+    if platform.system() == 'Windows':
+        base = os.environ.get('APPDATA', os.path.expanduser('~\\AppData\\Roaming'))
+        path = pathlib.Path(base) / 'TidalFusion'
+    else:
+        # XDG Standard or fallback to ~/.config
+        base = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
+        path = pathlib.Path(base) / 'tidal_fusion'
+    
+    # Ensure it exists
+    if not path.exists():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            print(f"Created config directory: {path}")
+        except Exception as e:
+            print(f"Warning: Could not create config dir {path}: {e}", file=sys.stderr)
+            
+    return path
+
+CONFIG_DIR = get_config_dir()
+TOKEN_FILE = CONFIG_DIR / 'tidal_tokens.json'
 
 def save_tokens(session):
     """Save session tokens to a local file with secure permissions."""

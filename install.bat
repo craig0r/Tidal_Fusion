@@ -14,16 +14,16 @@ if %errorlevel% neq 0 (
 echo [OK] Python found.
 
 REM 2. Install Dependencies
-echo [INFO] Installing dependencies...
-pip install -r requirements.txt
+echo [INFO] Installing/Updating dependencies...
+pip install --upgrade -r requirements.txt
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to install requirements.
     pause
     exit /b 1
 )
 
-echo [INFO] Installing PyInstaller...
-pip install pyinstaller
+echo [INFO] Installing/Updating PyInstaller...
+pip install --upgrade pyinstaller
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to install PyInstaller.
     pause
