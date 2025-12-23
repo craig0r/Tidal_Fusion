@@ -37,3 +37,10 @@ If the scripts fail, you can build manually:
    ```
 3. **Install**:
    - Copy the generated file from `dist/` to your preferred location (e.g., `/usr/local/bin` or a folder in your PATH).
+
+## Getting Started
+After installation, you must authenticate with Tidal before generating playlists:
+1. Run `tidal-fusion -c`.
+2. Select option **2. Run Authentication**.
+3. Complete the login process in your browser.
+

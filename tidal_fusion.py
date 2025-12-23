@@ -379,6 +379,39 @@ def fetch_fusion_tracks(session, config, limit=200):
     
     return final_list
 
+def log_generation(tracks, mode):
+    """
+    Log the generated tracks to a file.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d-%H:%M:%S")
+    filename = f"fusion-log-{timestamp}.txt"
+    
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(f"Tidal Fusion Generation Log\n")
+            f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Mode: {mode}\n")
+            f.write(f"Total Tracks: {len(tracks)}\n")
+            f.write("-" * 40 + "\n")
+            
+            for i, track in enumerate(tracks, 1):
+                artist = getattr(track, 'artist', None)
+                if artist:
+                    artist_name = artist.name
+                else:
+                     # sometimes track.artists is a list
+                    artists = getattr(track, 'artists', [])
+                    artist_name = ", ".join([a.name for a in artists]) if artists else "Unknown Artist"
+                
+                title = getattr(track, 'name', 'Unknown Title')
+                bpm = getattr(track, 'bpm', 'N/A')
+                
+                f.write(f"{i}. {artist_name} - {title} [BPM: {bpm}]\n")
+                
+        print(f"Log generated: {filename}")
+    except Exception as e:
+        print(f"Error writing log: {e}")
+
 # --- Playlist Management ---
 
 def update_playlist(session, args, tracks):
@@ -469,8 +502,9 @@ def main():
     
     # Actions
     mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument('--login', action='store_true', help="Run authentication flow")
+    # Removed --login argument
     mode_group.add_argument('-n', '--new', action='store_true', help="Overwrite (empty & fill) playlist (Default)")
+
     mode_group.add_argument('-a', '--append', action='store_true', help="Append to playlist")
     mode_group.add_argument('-c', '--config', action='store_true', help="Configure settings")
     
@@ -499,25 +533,16 @@ def main():
              print("Help: -c / --config")
              print("  Opens the configuration menu.")
              print("  Use --mode <name> to configure a specific mode.")
-        elif args.login:
-             print("Help: --login")
-             print("  Initiates the Tidal authentication process.")
         else:
             print("Tidal Fusion Help")
-            print("  --login       : Authenticate with Tidal")
             print("  -n, --new     : Create/Reset playlist (Default)")
             print("  -a, --append  : Append to playlist")
             print("  -c, --config  : Configure modes")
             print("  --mode <name> : Select mode (basic, fusion)")
             print("  -m, --limit   : Set max tracks (Fusion)")
         return
-
-    # 1. Login
-    if args.login:
-        auth_manager.login()
-        return
-
-    # 2. Config
+    
+    # 1. Config
     if args.config:
         if args.mode:
             # Mode specific config
@@ -544,7 +569,7 @@ def main():
     
     session = auth_manager.get_session()
     if not session:
-        print("Please run --login first.")
+        print("Please run 'tidal-fusion -c' and select 'Run Authentication' first.")
         return
 
     tracks = []
@@ -560,6 +585,7 @@ def main():
     if mode == 'basic':
         random.shuffle(tracks)
         
+    log_generation(tracks, mode)
     update_playlist(session, args, tracks)
 
 if __name__ == "__main__":

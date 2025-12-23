@@ -12,8 +12,13 @@ tidal-fusion
 | Argument | Description |
 | :--- | :--- |
 | `-h`, `--help` | Show context-aware help. |
-| `--login` | Start the Tidal OAuth authentication flow. |
 | `-c`, `--config` | Open the configuration menu. |
+
+## Authentication
+Tidal Fusion requires a valid Tidal session. To authenticate:
+1. Run `tidal-fusion -c` to open the configuration menu.
+2. Select **Run Authentication**.
+3. Follow the link to log in via your browser.
 
 ## Actions (Mutually Exclusive)
 Choose **one** of the following to determine *what* the tool does with the playlist.
