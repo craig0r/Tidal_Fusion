@@ -212,7 +212,7 @@ def history_log_tracks(tracks):
                 str(t.id),
                 getattr(t, 'name', 'Unknown'),
                 artist_name,
-                now,
+                now.isoformat(),
                 getattr(t, 'bpm', None),
                 None # Style not available
             ))
@@ -237,7 +237,7 @@ def history_get_recent_ids(days):
     
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     
-    c.execute("SELECT track_id FROM history WHERE timestamp > ?", (cutoff,))
+    c.execute("SELECT track_id FROM history WHERE timestamp > ?", (cutoff.isoformat(),))
     rows = c.fetchall()
     conn.close()
     
@@ -310,15 +310,62 @@ def get_mix_by_name(session, name_substr):
 
 def fetch_basic_tracks(session, config):
     """Fetch tracks from configured basic sources."""
-    # (Existing implementation needs to be preserved or re-implemented above if I replace logic)
-    # The previous code view showed fetch_basic_tracks is QUITE LARGE and has custom logic.
-    # To avoid breaking it, I should NOT replace it entirely unless I have the full code.
-    # I DO NOT have the full fetch_basic_tracks code in the previous view (lines 150-188 were part of it? No, lines 150-180 were indentation).
+    tracks = []
+    found_ids = set()
     
-    # Wait, in the previous `view_file` (lines 150-210), line 151 is inside `fetch_basic_tracks`?
-    # No, look at indentation. `def process_container` is logged at line 151.
-    # Where does `fetch_basic_tracks` START?
-    pass
+    modes_conf = config.get("modes", {}).get("basic", {})
+    
+    def process_container(container, source_name):
+        try:
+            # TidalPlaylist or Mix
+            items = []
+            if hasattr(container, 'tracks') and callable(container.tracks):
+                items = container.tracks()
+            elif hasattr(container, 'items') and callable(container.items):
+                items = container.items()
+            
+            count = 0
+            for t in items:
+                if not hasattr(t, 'id'): continue
+                if t.id not in found_ids:
+                    t.fusion_source_pool = "Basic"
+                    t.fusion_source_mix = source_name
+                    tracks.append(t)
+                    found_ids.add(t.id)
+                    count += 1
+            if count > 0:
+                print(f"  - Added {count} tracks from '{source_name}'")
+        except Exception as e:
+            print(f"  - Error processing '{source_name}': {e}")
+
+
+    # 1. My Daily Discovery
+    if modes_conf.get("daily_discovery", True):
+        print("Fetching 'My Daily Discovery'...")
+        mix = get_mix_by_name(session, "My Daily Discovery")
+        if mix:
+            process_container(mix, "My Daily Discovery")
+        else:
+            print("  - Not found.")
+            
+    # 2. My New Arrivals
+    if modes_conf.get("new_arrivals", True):
+        print("Fetching 'My New Arrivals'...")
+        mix = get_mix_by_name(session, "My New Arrivals")
+        if mix:
+            process_container(mix, "My New Arrivals")
+        else:
+            print("  - Not found.")
+
+    # 3. My Mixes (1-8)
+    if modes_conf.get("my_mixes", True):
+        print("Fetching 'My Mix' collection...")
+        for name in MIX_NAMES_GENERATED:
+            mix = get_mix_by_name(session, name)
+            if mix:
+                process_container(mix, name)
+
+    return tracks
 
 def fetch_fusion_tracks(session, config, limit=150):
     """
