@@ -299,11 +299,16 @@ def get_mix_by_name(session, name_substr):
         
     # 2. Check Mixes
     try:
-        # iterate mixes looking for title
-        # mixes() returns mix objects
-        pass # Not easily searchable without iterating all?
-    except:
-        pass
+        # Check if session has mixes method (custom tidalapi or standard)
+        # Usually session.mixes() returns a list of Mix objects
+        if hasattr(session, 'mixes'):
+            mixes = session.mixes()
+            for mix in mixes:
+                title = getattr(mix, 'title', getattr(mix, 'name', ''))
+                if title and name_substr.lower() in title.lower():
+                    return mix
+    except Exception as e:
+        print(f"  - Error checking mixes: {e}")
     
     # Fallback to search? No, strictly personal mixes usually.
     return None
@@ -394,17 +399,13 @@ def fetch_fusion_tracks(session, config, limit=150):
         print("- Error fetching Favorites")
 
     history = []
-    try:
-        # history() might return an iterator or list
-        raw_history = list(session.user.history())[:100]
-        raw_history = [t for t in raw_history if hasattr(t, 'id')]
-        history = [t for t in raw_history if str(t.id) not in recent_ids]
-        for t in history:
-            t.fusion_source_pool = "Habit"
-            t.fusion_source_mix = "History"
-        print(f"- Fetched {len(history)} History items (Excluded {len(raw_history) - len(history)} recent)")
-    except Exception:
-        print("- Error fetching History")
+    # session.user.history() is not available in current tidalapi version
+    # keeping history empty for now (Habit bucket will backfill from others)
+    # try:
+    #     history_obj = session.user.history()
+    #     ...
+    # except...
+    print("- History fetching skipped (API limitation)")
         
     discovery = []
     # Reuse basic logic which now tags fusion_source_mix
