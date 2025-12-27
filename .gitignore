@@ -32,15 +32,5 @@ tidal_config.json
 # IDEs
 .vscode/
 .idea/
-explore_tidalapi.py
-fusion-log-20251222-20:55:32.txt
-fusion-log-20251222-21:03:44.txt
-fusion-log-20251223-08:48:06.txt
-fusion-log-20251223-08:52:35.txt
-fusion-log-20251223-08:55:39.txt
-fusion-log-20251223-09:51:42.txt
 debug_output.txt
-debug_playlists.py
-inspect_removal.py
 inspection_log.txt
-debug_check_v2.py

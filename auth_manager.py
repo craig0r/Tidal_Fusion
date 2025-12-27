@@ -4,7 +4,9 @@ import pathlib
 import platform
 import sys
 import webbrowser
+import sqlite3
 import tidalapi
+from datetime import datetime
 
 # Constants
 def get_config_dir():
@@ -25,58 +27,176 @@ def get_config_dir():
         except Exception as e:
             print(f"Warning: Could not create config dir {path}: {e}", file=sys.stderr)
             
-    # DEBUG: verify path
-    # print(f"DEBUG: Config Dir resolved to: {path}")
     return path
 
 CONFIG_DIR = get_config_dir()
-TOKEN_FILE = CONFIG_DIR / 'tidal_tokens.json'
-CONFIG_FILE = CONFIG_DIR / 'tidal_config.json'
+DB_FILE = CONFIG_DIR / 'fusion.db'
+LEGACY_TOKEN_FILE = CONFIG_DIR / 'tidal_tokens.json'
+LEGACY_CONFIG_FILE = CONFIG_DIR / 'tidal_config.json'
+
+def get_connection():
+    """Get a connection to the SQLite database."""
+    return sqlite3.connect(DB_FILE)
+
+def init_db():
+    """Initialize the database schema."""
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # 1. Tokens Table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS tokens (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            token_type TEXT,
+            access_token TEXT,
+            refresh_token TEXT,
+            expiry_time REAL
+        )
+    ''')
+    
+    # 2. Config Table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS config (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    
+    # 3. History Table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id TEXT,
+            track_name TEXT,
+            artist_name TEXT,
+            timestamp DATETIME,
+            bpm INTEGER,
+            style TEXT
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    
+    # Run Migration
+    migrate_legacy_files()
+
+def migrate_legacy_files():
+    """Import legacy JSON files into DB and rename them to .bak."""
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # Migrate Tokens
+    if LEGACY_TOKEN_FILE.exists():
+        try:
+            print("Migrating legacy tokens to database...")
+            with open(LEGACY_TOKEN_FILE, 'r') as f:
+                data = json.load(f)
+            
+            c.execute('''
+                INSERT OR REPLACE INTO tokens (id, token_type, access_token, refresh_token, expiry_time)
+                VALUES (1, ?, ?, ?, ?)
+            ''', (data.get('token_type'), data.get('access_token'), data.get('refresh_token'), data.get('expiry_time')))
+            
+            os.rename(LEGACY_TOKEN_FILE, LEGACY_TOKEN_FILE.with_suffix('.json.bak'))
+            print("- Tokens migrated and file renamed.")
+        except Exception as e:
+            print(f"- Token migration failed: {e}")
+
+    # Migrate Config
+    if LEGACY_CONFIG_FILE.exists():
+        try:
+            print("Migrating legacy config to database...")
+            with open(LEGACY_CONFIG_FILE, 'r') as f:
+                config_data = json.load(f)
+            
+            # Flatten or store as JSON blob? 
+            # Storing entire JSON blob under 'main_config' key for simplicity and compatibility
+            # Or flattening? The request said "table called config". Key-Value makes sense.
+            # But the config structure is nested (modes -> basic -> ...).
+            # Storing the whole JSON string under a single key 'app_config' is safest for now to avoid rewriting all access logic immediately.
+            # However, "move tidal_config.json into a table... called config".
+            # I will store the whole JSON string for the 'app_config' key.
+            
+            c.execute('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', 
+                      ('app_config', json.dumps(config_data)))
+            
+            os.rename(LEGACY_CONFIG_FILE, LEGACY_CONFIG_FILE.with_suffix('.json.bak'))
+            print("- Config migrated and file renamed.")
+        except Exception as e:
+            print(f"- Config migration failed: {e}")
+
+    conn.commit()
+    conn.close()
 
 def save_tokens(session):
-    """Save session tokens to a local file with secure permissions."""
-    data = {
-        'token_type': session.token_type,
-        'access_token': session.access_token,
-        'refresh_token': session.refresh_token,
-        'expiry_time': session.expiry_time.timestamp() if session.expiry_time else None
-    }
-    
-    with open(TOKEN_FILE, 'w') as f:
-        json.dump(data, f)
-    
-    # Set file permissions to read/write only for owner on POSIX systems
-    if platform.system() != 'Windows':
-        try:
-            os.chmod(TOKEN_FILE, 0o600)
-        except Exception as e:
-            print(f"Warning: Could not set secure file permissions: {e}", file=sys.stderr)
-    
-    print(f"Session saved to {TOKEN_FILE}")
+    """Save session tokens to DB."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO tokens (id, token_type, access_token, refresh_token, expiry_time)
+        VALUES (1, ?, ?, ?, ?)
+    ''', (session.token_type, session.access_token, session.refresh_token, 
+          session.expiry_time.timestamp() if session.expiry_time else None))
+    conn.commit()
+    conn.close()
+    print("Session saved to database.")
 
 def load_tokens(session):
-    """Load session tokens from local file."""
-    if not TOKEN_FILE.exists():
-        return False
+    """Load session tokens from DB."""
+    ensure_db_ready()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('SELECT token_type, access_token, refresh_token, expiry_time FROM tokens WHERE id = 1')
+    row = c.fetchone()
+    conn.close()
     
+    if not row:
+        return False
+        
     try:
-        with open(TOKEN_FILE, 'r') as f:
-            data = json.load(f)
-            
-        # Check if we have the necessary fields
-        if not all(k in data for k in ['token_type', 'access_token', 'refresh_token']):
-            return False
-
         session.load_oauth_session(
-            data['token_type'],
-            data['access_token'],
-            data['refresh_token'],
-            data.get('expiry_time')
+            row[0], # token_type
+            row[1], # access_token
+            row[2], # refresh_token
+            row[3]  # expiry_time
         )
         return True
     except Exception as e:
-        print(f"Error loading tokens: {e}", file=sys.stderr)
+        print(f"Error loading tokens from DB: {e}", file=sys.stderr)
         return False
+
+# Config Helpers
+def get_config():
+    """Load the full config object from DB."""
+    ensure_db_ready()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT value FROM config WHERE key = 'app_config'")
+    row = c.fetchone()
+    conn.close()
+    
+    if row:
+        try:
+            return json.loads(row[0])
+        except:
+            return {}
+    return {}
+
+def save_config(config_data):
+    """Save the full config object to DB."""
+    ensure_db_ready()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', 
+              ('app_config', json.dumps(config_data)))
+    conn.commit()
+    conn.close()
+
+def ensure_db_ready():
+    """Check if DB exists, if not init."""
+    if not DB_FILE.exists():
+        init_db()
 
 def login(session=None):
     """
