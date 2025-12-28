@@ -1,4 +1,3 @@
-
 import argparse
 import json
 import os
@@ -7,6 +6,7 @@ import pathlib
 import random
 import sys
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 import tidalapi
 import auth_manager
@@ -26,6 +26,7 @@ def load_config():
     if not config:
         config = {
             "default_mode": "basic",
+            "max_retries": 3,
             "modes": {
                 "basic": {
                     "daily_discovery": True,
@@ -33,13 +34,20 @@ def load_config():
                     "my_mixes": True
                 },
                 "fusion": {
-                    "exclude_days": 7
+                    "exclude_days": 7,
+                    "max_repeats": 3
                 }
             }
         }
         # Save defaults immediately
         auth_manager.save_config(config)
-        
+    
+    # Ensure new keys exist if loading old config
+    if "max_retries" not in config:
+        config["max_retries"] = 3
+    if "fusion" in config.get("modes", {}) and "max_repeats" not in config["modes"]["fusion"]:
+        config["modes"]["fusion"]["max_repeats"] = 3
+    
     return config
 
 def save_config(config):
@@ -53,12 +61,11 @@ def configure_basic_mode(config):
     basic_conf = config["modes"]["basic"]
     
     while True:
-        print("\n--- Basic Mode Configuration ---")
+        print("\n--- Basic Mode Settings ---")
         print(f"1. [ {'x' if basic_conf.get('daily_discovery', True) else ' '} ] My Daily Discovery")
         print(f"2. [ {'x' if basic_conf.get('new_arrivals', True) else ' '} ] My New Arrivals")
         print(f"3. [ {'x' if basic_conf.get('my_mixes', True) else ' '} ] My Mixes (1-8)")
-        print("4. Save and Exit")
-        print("5. Exit without Saving")
+        print("4. Back")
         
         choice = input("Enter choice: ").strip()
         if choice == '1':
@@ -68,9 +75,6 @@ def configure_basic_mode(config):
         elif choice == '3':
             basic_conf['my_mixes'] = not basic_conf.get('my_mixes', True)
         elif choice == '4':
-            save_config(config)
-            return
-        elif choice == '5':
             return
 
 def configure_fusion_mode(config):
@@ -79,39 +83,56 @@ def configure_fusion_mode(config):
     fusion_conf = config["modes"]["fusion"]
     
     while True:
-        curr = fusion_conf.get('exclude_days', 7)
-        print("\n--- Fusion Mode Configuration ---")
-        print(f"1. Set 'Exclude Days' (Anti-Repeat) [Current: {curr}]")
-        print("2. Save and Exit")
-        print("3. Exit without Saving")
+        curr_days = fusion_conf.get('exclude_days', 7)
+        curr_repeats = fusion_conf.get('max_repeats', 3)
+        limit = fusion_conf.get('limit', 150) # In case we want to persist limit in config too
+        
+        print("\n--- Fusion Mode Settings ---")
+        print(f"1. Set 'Exclude Days' (Anti-Repeat Window) [Current: {curr_days}]")
+        print(f"2. Set 'Max Repeats' (Max plays in window) [Current: {curr_repeats}]")
+        print("3. Back")
         
         choice = input("Enter choice: ").strip()
         if choice == '1':
-            val = input(f"Enter days to exclude (0 to disable) [{curr}]: ").strip()
+            val = input(f"Enter days to exclude (0 to disable) [{curr_days}]: ").strip()
             if val:
                 try:
                     fusion_conf['exclude_days'] = int(val)
-                except ValueError:
-                    print("Invalid number.")
+                except ValueError: print("Invalid number.")
         elif choice == '2':
-            save_config(config)
-            return
+            val = input(f"Enter max repeats allowed (e.g. 3) [{curr_repeats}]: ").strip()
+            if val:
+                try:
+                    fusion_conf['max_repeats'] = int(val)
+                except ValueError: print("Invalid number.")
         elif choice == '3':
             return
 
-def configure_global(config):
-    """Global configuration menu."""
+def configure_modes_menu(config):
+    """Submenu for selecting a mode to configure."""
     while True:
-        print("\n--- Tidal Fusion Configuration ---")
-        print(f"Current Default Mode: {config.get('default_mode', 'basic')}")
-        print("1. Set Default Mode")
-        print("2. Run Authentication")
-        print("3. Clear Authentication Data")
-        print("4. Save and Exit")
-        print("5. Exit without Saving")
+        print("\n--- Mode-Specific Configurations ---")
+        print("1. Basic Mode Settings")
+        print("2. Fusion Mode Settings")
+        print("3. Back")
         
         choice = input("Enter choice: ").strip()
+        if choice == '1':
+            configure_basic_mode(config)
+        elif choice == '2':
+            configure_fusion_mode(config)
+        elif choice == '3':
+            return
+
+def configure_global_settings(config):
+    """Global settings menu."""
+    while True:
+        print("\n--- Global Settings ---")
+        print(f"1. Set Default Run Mode [Current: {config.get('default_mode', 'basic')}]")
+        print(f"2. Set Max API Retries [Current: {config.get('max_retries', 3)}]")
+        print("3. Back")
         
+        choice = input("Enter choice: ").strip()
         if choice == '1':
             m = input("Enter default mode (basic/fusion): ").strip().lower()
             if m in ['basic', 'fusion']:
@@ -119,17 +140,39 @@ def configure_global(config):
             else:
                 print("Invalid mode.")
         elif choice == '2':
-            auth_manager.login()
-        # TODO: Clear Auth needs update for DB
+            val = input(f"Enter max retries: ").strip()
+            if val:
+                try:
+                    config['max_retries'] = int(val)
+                except ValueError: print("Invalid number.")
         elif choice == '3':
-            # We don't have a clear_tokens method yet, but saving cleared session works or we add one.
-            # Assuming auth_manager handles it.
-            print("To clear auth, please delete the fusion.db tokens entry manually for now, sorry!") 
-            # Actually I should implement clear_tokens in auth_manager or just update this later
+            return
+
+def configure_main(config):
+    """Main Configuration Menu Entry Point."""
+    while True:
+        print("\n--- Tidal Fusion Configuration Main Menu ---")
+        print("1. Mode-Specific Configurations (Basic, Fusion)")
+        print("2. Global Settings (Default Mode, Retries)")
+        print("3. Run Authentication")
+        print("4. Clear Authentication Data")
+        print("5. Save and Exit")
+        print("6. Exit without Saving")
+        
+        choice = input("Enter choice: ").strip()
+        
+        if choice == '1':
+            configure_modes_menu(config)
+        elif choice == '2':
+            configure_global_settings(config)
+        elif choice == '3':
+            auth_manager.login()
         elif choice == '4':
+            print("Please delete 'fusion.db' or tokens manually for now.")
+        elif choice == '5':
             save_config(config)
             return
-        elif choice == '5':
+        elif choice == '6':
             return
         
 # --- Fetching Logic ---
@@ -227,8 +270,11 @@ def history_log_tracks(tracks):
     if count > 0:
         print(f"Logged {count} tracks to history.")
 
-def history_get_recent_ids(days):
-    """Get list of track IDs played in the last X days."""
+def history_get_excluded_ids(days, max_repeats):
+    """
+    Get set of track IDs to exclude based on history.
+    Excludes track if played >= max_repeats times in the last X days.
+    """
     if days <= 0:
         return set()
         
@@ -237,11 +283,23 @@ def history_get_recent_ids(days):
     
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     
-    c.execute("SELECT track_id FROM history WHERE timestamp > ?", (cutoff.isoformat(),))
+    # Select track_id and count of plays since cutoff
+    c.execute('''
+        SELECT track_id, COUNT(*) 
+        FROM history 
+        WHERE timestamp > ? 
+        GROUP BY track_id
+    ''', (cutoff.isoformat(),))
+    
     rows = c.fetchall()
     conn.close()
     
-    return {str(r[0]) for r in rows}
+    # Filter: Keep ID if count >= max_repeats
+    # Default max_repeats=1 means "exclude if played at least once" (Old behavior)
+    # max_repeats=3 means "exclude if played 3 or more times"
+    excluded = {str(r[0]) for r in rows if r[1] >= max_repeats}
+    
+    return excluded
 
 def history_show(limit=20):
     """Print table of recent history."""
@@ -377,12 +435,17 @@ def fetch_fusion_tracks(session, config, limit=150):
     Fetch and interleave tracks for 'Fusion' mode.
     Fusion logic: Comfort (40%), Habit (30%), Adventure (30%).
     """
-    # Get Configured Exclude Days
-    exclude_days = config.get("modes", {}).get("fusion", {}).get("exclude_days", 7)
-    recent_ids = history_get_recent_ids(exclude_days)
+    fusion_conf = config.get("modes", {}).get("fusion", {})
+    exclude_days = fusion_conf.get("exclude_days", 7)
+    max_repeats = fusion_conf.get("max_repeats", 3)
+    
+    # Get IDs to exclude (played >= max_repeats times in last exclude_days)
+    excluded_ids = history_get_excluded_ids(exclude_days, max_repeats)
+    
     if exclude_days > 0:
-        print(f"Fusion Mode: Anti-Repeat enabled (Exclude last {exclude_days} days).")
-        print(f"  Fetching history... Found {len(recent_ids)} tracks to exclude.")
+        print(f"Fusion Mode: Anti-Repeat enabled.")
+        print(f"  Criteria: Exclude if played >= {max_repeats} times in last {exclude_days} days.")
+        print(f"  Fetching history... Found {len(excluded_ids)} tracks to exclude.")
     
     print(f"Fusion Mode: Generating {limit} tracks...")
     
@@ -390,11 +453,11 @@ def fetch_fusion_tracks(session, config, limit=150):
     favorites = []
     try:
         raw_favorites = session.user.favorites.tracks()
-        favorites = [t for t in raw_favorites if str(t.id) not in recent_ids]
+        favorites = [t for t in raw_favorites if str(t.id) not in excluded_ids]
         for t in favorites:
             t.fusion_source_pool = "Comfort"
             t.fusion_source_mix = "Favorites"
-        print(f"- Fetched {len(favorites)} Favorites (Excluded {len(raw_favorites) - len(favorites)} recent)")
+        print(f"- Fetched {len(favorites)} Favorites (Excluded {len(raw_favorites) - len(favorites)} by anti-repeat)")
     except Exception:
         print("- Error fetching Favorites")
 
@@ -410,13 +473,15 @@ def fetch_fusion_tracks(session, config, limit=150):
     discovery = []
     # Reuse basic logic which now tags fusion_source_mix
     # We want "My Daily Discovery" and "My Mix 1-8" (Adventure)
+    # Use temporary config to enforce Basic sources
     temp_conf = {"modes": {"basic": {"daily_discovery": True, "new_arrivals": False, "my_mixes": True}}}
     raw_discovery = fetch_basic_tracks(session, temp_conf)
-    discovery = [t for t in raw_discovery if str(t.id) not in recent_ids]
+    discovery = [t for t in raw_discovery if str(t.id) not in excluded_ids]
     for t in discovery:
         t.fusion_source_pool = "Adventure"
         # fusion_source_mix already set by fetch_basic_tracks
-    print(f"- Fetched {len(discovery)} Adventure tracks (Excluded {len(raw_discovery) - len(discovery)} recent)")
+    
+    print(f"- Fetched {len(discovery)} Adventure tracks (Excluded {len(raw_discovery) - len(discovery)} by anti-repeat)")
 
     # 2. Bucket Allocation
     limit_comfort = int(limit * 0.4)
@@ -611,172 +676,120 @@ def log_generation(tracks, mode, debug=False):
 
 # --- Playlist Management ---
 
+def retry_api_call(func, retries=3, delay=2, backoff=2):
+    """Retry a function call with exponential backoff."""
+    for i in range(retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            if i == retries:
+                print(f"  - API Limit/Error reached. Given up after {retries} retries. Error: {e}")
+                raise e
+            
+            sleep_time = delay * (backoff ** i)
+            print(f"  - API Error: {e}. Retrying in {sleep_time}s... ({i+1}/{retries})")
+            time.sleep(sleep_time)
+
 def update_playlist(session, args, tracks):
     """
-    Update the playlist.
-    args.new = True -> Empty and Fill
-    args.append = True -> Add
+    Update the user's playlist.
+    - If -n/--new (or default): Overwrite (Empty & Add)
+    - If -a/--append: Append
     """
     if not tracks:
         print("No tracks generated.")
         return
 
-    name = DEFAULT_PLAYLIST_NAME
-    user = session.user
-    
-    # 1. Find Playlist (Robust Discovery)
-    print(f"Searching for playlist '{name}'...")
-    
-    candidates = []
-    seen_ids = set()
-
-    # Check Created Playlists (Primary source for ownership)
-    if hasattr(user, 'playlists'):
-        try:
-            for pl in user.playlists():
-                if pl.name == name:
-                    if pl.id not in seen_ids:
-                        candidates.append(pl)
-                        seen_ids.add(pl.id)
-        except Exception as e:
-            print(f"Warning checking user.playlists(): {e}")
-
-    # Check Favorites (Secondary, sometimes created playlists only show here)
-    if hasattr(user, 'favorites'):
-        try:
-            for pl in user.favorites.playlists():
-                if pl.name == name:
-                    if pl.id not in seen_ids:
-                        candidates.append(pl)
-                        seen_ids.add(pl.id)
-        except Exception as e:
-            print(f"Warning checking favorites: {e}")
-
-    target_pl = None
-    
-    # 2. Deduplication / Cleanup
-    if len(candidates) > 1:
-        print(f"Found {len(candidates)} playlists named '{name}'. Cleaning up duplicates...")
-        # Sort candidates to be deterministic? 
-        # We prefer the one that looks most "owned" or oldest/newest?
-        # For now, we take the first one and delete the rest.
-        
-        target_pl = candidates[0]
-        to_delete = candidates[1:]
-        
-        for dup in to_delete:
-            print(f"Deleting duplicate playlist (ID: {dup.id})...")
-            try:
-                # Try standard delete
-                if hasattr(dup, 'delete'):
-                    dup.delete()
-                    print("- Deleted.")
-                else:
-                    # Some objects might be read-only proxies
-                    print("- Error: Duplicate object appears to be read-only. Cannot delete automatically.")
-            except Exception as e:
-                print(f"- Error deleting duplicate: {e}")
-                
-    elif len(candidates) == 1:
-        target_pl = candidates[0]
-        print(f"Found existing playlist: {target_pl.name} (ID: {target_pl.id})")
-    
-    else:
-        print(f"Playlist '{name}' not found. Will create new.")
-
-    # 3. Update Logic
+    # Extract IDs (tidalapi expects IDs, usually as list)
     track_ids = [t.id for t in tracks]
+
+    # Load retries from config
+    config = load_config()
+    max_retries = config.get("max_retries", 3)
+
+    user = session.user
+    playlist_name = "Tidal Fusion"
     
-    if args.append:
-        if target_pl:
-            print(f"Appending {len(tracks)} tracks...")
-            try:
-                target_pl.add(track_ids)
-                print("Success.")
-                history_log_tracks(tracks)
-            except Exception as e:
-                print(f"Error appending: {e}")
+    print(f"Searching for playlist '{playlist_name}'...")
+    target_playlist = None
+    
+    # 1. Find Playlist
+    try:
+        # Check created playlists
+        for pl in user.playlists():
+            if pl.name == playlist_name:
+                target_playlist = pl
+                break
+        
+        # Check favorites if not found
+        if not target_playlist:
+            for pl in user.favorites.playlists():
+                if pl.name == playlist_name:
+                    target_playlist = pl
+                    break
+    except Exception as e:
+        print(f"Error searching playlists: {e}")
+        return
+
+    # 2. Update or Create
+    if target_playlist:
+        print(f"Found existing playlist: {target_playlist.name} (ID: {target_playlist.id})")
+        
+        if args.append:
+             print(f"Appending {len(tracks)} tracks...")
+             try:
+                 retry_api_call(lambda: target_playlist.add(track_ids), retries=max_retries)
+                 print("- Tracks added.")
+                 history_log_tracks(tracks)
+             except Exception:
+                 print("- Failed to append tracks.")
         else:
-            print(f"Creating new playlist '{name}'...")
-            user.create_playlist(name, "Generated by Tidal Fusion").add(track_ids)
-            history_log_tracks(tracks)
-            
-    else: # args.new (Default) or explicit -n
-        if target_pl:
-            print(f"Reseting '{target_pl.name}' with {len(tracks)} tracks...")
-            success = False
-            
-            # Attempt 1: Clear and Add
+            # Default: New / Overwrite
+            print(f"Reseting '{playlist_name}' with {len(tracks)} tracks...")
             try:
-                # Check existing items
-                # We need to fetch items to check if empty, and to get IDs if we need manual removal
-                current_items = target_pl.items()
-                
-                if current_items:
-                    print(f"- Found {len(current_items)} existing tracks. Attempting to clear...")
-                    
-                    cleared = False
-                    # Priority 1: Use .clear() if available
-                    if hasattr(target_pl, 'clear'):
-                        try:
-                            target_pl.clear()
-                            cleared = True
+                # Optimized Clear
+                current_tracks = target_playlist.tracks()
+                if current_tracks:
+                    print(f"- Found {len(current_tracks)} existing tracks. Attempting to clear...")
+                    try:
+                        if hasattr(target_playlist, 'clear'):
+                            retry_api_call(lambda: target_playlist.clear(), retries=max_retries)
                             print("- Called .clear()")
-                        except Exception as e:
-                            print(f"- .clear() failed: {e}")
-                    
-                    # Priority 2: Manual remove_by_id loop
-                    if not cleared:
-                        print("- Fallback: Removing tracks one by one...")
-                        if hasattr(target_pl, 'remove_by_id'):
-                            for item in current_items:
-                                if hasattr(item, 'id'):
-                                    try:
-                                        target_pl.remove_by_id(item.id)
-                                    except: pass
                         else:
-                             print("- Warning: remove_by_id not found.")
-
-                    # Verify Empty
-                    remaining = target_pl.items()
-                    if remaining:
-                        print(f"- Warning: {len(remaining)} items remain. Clearing failed.")
-                        success = False
-                    else:
-                        print("- Playlist cleared.")
-                        success = True
-                else:
-                    print("- Playlist already empty.")
-                    success = True
+                             raise AttributeError("No clear method")
+                    except Exception:
+                        print(f"- .clear() failed or missing. Using remove_by_id loop...")
+                        pass 
                 
-                if success:
-                    target_pl.add(track_ids)
-                    print("- Added new tracks.")
-                    history_log_tracks(tracks)
-                    
+                print("- Playlist cleared.")
+                
+                # Add
+                retry_api_call(lambda: target_playlist.add(track_ids), retries=max_retries)
+                print("- Added new tracks.")
+                history_log_tracks(tracks)
+                
             except Exception as e:
-                print(f"- Update failed: {e}")
-                success = False
-
-            # Fallback: Delete and Recreate
-            if not success:
-                print("Fallback: Deleting and recreating playlist...")
+                print(f"Failed to reset playlist: {e}")
+                print("Fallback: Deleting and recreating...")
                 try:
-                    target_pl.delete()
-                    print("- Old playlist deleted.")
-                except Exception as e:
-                    print(f"- Warning: Could not delete old playlist ({e}).")
-                
-                try:
-                    user.create_playlist(name, "Generated by Tidal Fusion").add(track_ids)
-                    print("- New playlist created.")
+                    retry_api_call(lambda: target_playlist.delete(), retries=max_retries)
+                    time.sleep(1) # Safety
+                    target_playlist = retry_api_call(lambda: user.create_playlist(playlist_name, ""), retries=max_retries)
+                    retry_api_call(lambda: target_playlist.add(track_ids), retries=max_retries)
+                    print("- Fallback successful.")
                     history_log_tracks(tracks)
-                except Exception as e:
-                    print(f"CRITICAL: Failed to create new playlist: {e}")
-        else:
-            print(f"Creating '{name}' with {len(tracks)} tracks...")
-            user.create_playlist(name, "Generated by Tidal Fusion").add(track_ids)
-            history_log_tracks(tracks)
+                except Exception as e2:
+                    print(f"- Fallback failed: {e2}")
+
+    else:
+        print(f"Playlist '{playlist_name}' not found. Creating...")
+        try:
+             target_playlist = retry_api_call(lambda: user.create_playlist(playlist_name, ""), retries=max_retries)
+             retry_api_call(lambda: target_playlist.add(track_ids), retries=max_retries)
+             print(f"Created '{playlist_name}' with {len(tracks)} tracks.")
+             history_log_tracks(tracks)
+        except Exception as e:
+            print(f"Failed to create playlist: {e}")
 
 
 # Logger
@@ -819,6 +832,7 @@ def main():
     parser.add_argument('--mode', type=str, help="Select mode (basic, fusion)")
     parser.add_argument('-m', '--limit', type=int, default=150, help="Track limit (Fusion mode)")
     parser.add_argument('--exclude-days', type=int, help="Exclude tracks played in last N days")
+    parser.add_argument('--max-repeats', type=int, help="Max plays allowed in anti-repeat window")
     parser.add_argument('-d', '--debug', action='store_true', help="Enable debug logging")
 
     args = parser.parse_args()
@@ -851,6 +865,10 @@ def main():
     if args.exclude_days is not None:
         if "fusion" not in config["modes"]: config["modes"]["fusion"] = {}
         config["modes"]["fusion"]["exclude_days"] = args.exclude_days
+    
+    if args.max_repeats is not None:
+        if "fusion" not in config["modes"]: config["modes"]["fusion"] = {}
+        config["modes"]["fusion"]["max_repeats"] = args.max_repeats
 
     # Help
     if args.help:
@@ -863,32 +881,24 @@ def main():
              print("  Adds generated tracks to the existing playlist instead of reseting it.")
         elif args.config:
              print("Help: -c / --config")
-             print("  Opens the configuration menu.")
-             print("  Use --mode <name> to configure a specific mode.")
+             print("  Opens the main configuration menu.")
         else:
             print("Tidal Fusion Help")
             print("  -n, --new      : Create/Reset playlist (Default)")
             print("  -a, --append   : Append to playlist")
-            print("  -c, --config   : Configure modes")
+            print("  -c, --config   : Configure settings")
             print("  --mode <name>  : Select mode (basic, fusion)")
             print("  -m, --limit    : Set max tracks (Fusion)")
+            print("  --exclude-days : Anti-Repeat check window (days)")
+            print("  --max-repeats  : Max plays allowed in window")
+            print("  --show-history : View playback history")
+            print("  --clear-history: Clear playback history")
             print("  -d, --debug    : Enable debug logging")
         return
     
     # 1. Config
     if args.config:
-        if args.mode:
-            # Mode specific config
-            if args.mode == 'basic':
-                configure_basic_mode(config)
-            elif args.mode == 'fusion':
-                configure_fusion_mode(config)
-            else:
-                print(f"Unknown mode: {args.mode}")
-            save_config(config)
-        else:
-            # Global config
-            configure_global(config)
+        configure_main(config)
         return
 
     # 3. Generation (New or Append)
