@@ -41,6 +41,5 @@ If the scripts fail, you can build manually:
 ## Getting Started
 After installation, you must authenticate with Tidal before generating playlists:
 1. Run `tidal-fusion -c`.
-2. Select option **2. Run Authentication**.
+2. Select option **3. Run Authentication**.
 3. Complete the login process in your browser.
-

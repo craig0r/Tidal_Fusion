@@ -2,7 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] - 2025-12-20
+## [2.0.0] - 2025-12-27
+
+### Added
+- **Anti-Repeat System**:
+    - **History Tracking**: Logs all generated tracks to a local SQLite database.
+    - **Configurable Exclusion**: New arguments `--exclude-days` (lookback window) and `--max-repeats` (play threshold).
+    - **Visualization**: `tidal-fusion --show-history` to view playback logs.
+- **SQLite Database**:
+    - Replaced JSON file storage with `fusion.db` for robust data management (Tokens, Config, History).
+    - Automatic migration of existing JSON configuration files.
+- **API Resilience**:
+    - Added exponential backoff retry mechanism for Playlist API calls (`max_retries` configurable).
+- **Configuration Menu Refactor**:
+    - Unified `-c` menu with hierarchical structure (Mode-Specific vs Global settings).
+
+### Changed
+- **Defaults**: Playlist limit updated to 150 tracks.
+- **CLI**: Removed `--login` (use `-c` menu instead).
+- **Architecture**: `tidal_fusion.py` now relies on `auth_manager` for all DB interactions.
+
+## [1.1.0] - 2025-12-20
 
 ### Added
 - **Fusion Mode** (`--mode fusion`):
