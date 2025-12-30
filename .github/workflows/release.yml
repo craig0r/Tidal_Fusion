@@ -1,0 +1,52 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            asset_name: tidal_fusion_linux
+            exe_name: tidal_fusion
+          - os: windows-latest
+            asset_name: tidal_fusion_windows.exe
+            exe_name: tidal_fusion.exe
+          - os: macos-latest
+            asset_name: tidal_fusion_macos
+            exe_name: tidal_fusion
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build Binary
+      run: pyinstaller --onefile --name tidal_fusion tidal_fusion.py
+
+    - name: Rename Artifact
+      shell: bash
+      run: mv dist/${{ matrix.exe_name }} dist/${{ matrix.asset_name }}
+
+    - name: Release and Upload Assets
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: dist/${{ matrix.asset_name }}

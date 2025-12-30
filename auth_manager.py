@@ -19,17 +19,34 @@ def get_config_dir():
         base = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
         path = pathlib.Path(base) / 'tidal_fusion'
     
-    # Ensure it exists
-    if not path.exists():
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-            print(f"Created config directory: {path}")
-        except Exception as e:
-            print(f"Warning: Could not create config dir {path}: {e}", file=sys.stderr)
-            
-    return path
+# Configuration Paths
+if platform.system() == "Windows":
+    CONFIG_DIR = Path(os.environ["APPDATA"]) / "TidalFusion"
+    LOG_DIR = Path(os.environ["ProgramData"]) / "TidalFusion"
+else:
+    CONFIG_DIR = Path.home() / ".config" / "tidal_fusion"
+    LOG_DIR = Path("/var/log/tidal_fusion")
 
-CONFIG_DIR = get_config_dir()
+# Ensure Config Dir Exists
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+# Helper to check write access for logging
+def get_log_dir():
+    """Return LOG_DIR if writable, else fallback to CONFIG_DIR."""
+    try:
+        if not LOG_DIR.exists():
+            # managed by install script, but try creating if user owns /var/log/
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Test write access
+        test_file = LOG_DIR / ".test_write"
+        test_file.touch()
+        test_file.unlink()
+        return LOG_DIR
+    except Exception:
+        # Fallback to user config dir if permission denied
+        return CONFIG_DIR
+
 DB_FILE = CONFIG_DIR / 'fusion.db'
 LEGACY_TOKEN_FILE = CONFIG_DIR / 'tidal_tokens.json'
 LEGACY_CONFIG_FILE = CONFIG_DIR / 'tidal_config.json'

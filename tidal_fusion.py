@@ -85,12 +85,15 @@ def configure_fusion_mode(config):
     while True:
         curr_days = fusion_conf.get('exclude_days', 7)
         curr_repeats = fusion_conf.get('max_repeats', 3)
-        limit = fusion_conf.get('limit', 150) # In case we want to persist limit in config too
+        curr_limit_type = fusion_conf.get('limit_type', 'time')
+        curr_limit_val = fusion_conf.get('limit_value', 180 if curr_limit_type == 'time' else 150)
         
         print("\n--- Fusion Mode Settings ---")
         print(f"1. Set 'Exclude Days' (Anti-Repeat Window) [Current: {curr_days}]")
         print(f"2. Set 'Max Repeats' (Max plays in window) [Current: {curr_repeats}]")
-        print("3. Back")
+        print(f"3. Set Limit Type (Time/Count) [Current: {curr_limit_type}]")
+        print(f"4. Set Limit Value (Mins or Tracks) [Current: {curr_limit_val}]")
+        print("5. Back")
         
         choice = input("Enter choice: ").strip()
         if choice == '1':
@@ -106,6 +109,23 @@ def configure_fusion_mode(config):
                     fusion_conf['max_repeats'] = int(val)
                 except ValueError: print("Invalid number.")
         elif choice == '3':
+            val = input(f"Enter type (time/count) [{curr_limit_type}]: ").strip().lower()
+            if val in ['time', 'count']:
+                fusion_conf['limit_type'] = val
+                # Reset default value if switching type to avoid 150 mins or 180 tracks if wild
+                if val == 'time' and fusion_conf.get('limit_value', 0) < 60: 
+                     fusion_conf['limit_value'] = 180
+                elif val == 'count' and fusion_conf.get('limit_value', 0) > 500:
+                     fusion_conf['limit_value'] = 150
+            else:
+                print("Invalid type.")
+        elif choice == '4':
+            val = input(f"Enter value ({'minutes' if curr_limit_type=='time' else 'tracks'}) [{curr_limit_val}]: ").strip()
+            if val:
+                try:
+                   fusion_conf['limit_value'] = int(val)
+                except ValueError: print("Invalid number.")
+        elif choice == '5':
             return
 
 def configure_modes_menu(config):
@@ -430,24 +450,52 @@ def fetch_basic_tracks(session, config):
 
     return tracks
 
-def fetch_fusion_tracks(session, config, limit=150):
+def fetch_fusion_tracks(session, config, args):
     """
     Fetch and interleave tracks for 'Fusion' mode.
     Fusion logic: Comfort (40%), Habit (30%), Adventure (30%).
     """
     fusion_conf = config.get("modes", {}).get("fusion", {})
+    
+    # 1. Anti-Repeat Logic
     exclude_days = fusion_conf.get("exclude_days", 7)
     max_repeats = fusion_conf.get("max_repeats", 3)
     
-    # Get IDs to exclude (played >= max_repeats times in last exclude_days)
+    # Override from CLI if present
+    if hasattr(args, 'exclude_days') and args.exclude_days is not None:
+        exclude_days = args.exclude_days
+    if hasattr(args, 'max_repeats') and args.max_repeats is not None:
+        max_repeats = args.max_repeats
+
+    # Get IDs to exclude
     excluded_ids = history_get_excluded_ids(exclude_days, max_repeats)
     
     if exclude_days > 0:
         print(f"Fusion Mode: Anti-Repeat enabled.")
         print(f"  Criteria: Exclude if played >= {max_repeats} times in last {exclude_days} days.")
         print(f"  Fetching history... Found {len(excluded_ids)} tracks to exclude.")
+
+    # 2. Limit / Duration Logic
+    limit_type = getattr(args, 'limit_type', None) or fusion_conf.get("limit_type", "time")
+    limit_val = getattr(args, 'limit_value', None)
     
-    print(f"Fusion Mode: Generating {limit} tracks...")
+    # Legacy -m/--limit override (Count based)
+    if args.limit and args.limit != 150:
+         limit_type = "count"
+         limit_val = args.limit
+         
+    if not limit_val:
+        limit_val = 180 if limit_type == "time" else 150
+
+    target_seconds = 0
+    if limit_type == "time":
+        target_seconds = limit_val * 60
+        # Estimate count: Avg 3.5 mins (210s) per track
+        limit = int(target_seconds / 210)
+        print(f"Fusion Mode: Generating ~{limit} tracks for target time {limit_val} mins...")
+    else:
+        limit = limit_val
+        print(f"Fusion Mode: Generating {limit} tracks...")
     
     # 1. Fetch Candidates
     favorites = []
@@ -602,6 +650,28 @@ def fetch_fusion_tracks(session, config, limit=150):
                     swaps_made += 1
                     break
     
+    # 6. Time Limit Enforcement (Beta)
+    if limit_type == "time":
+        limit_val = limit_val or 180
+        target_sec = limit_val * 60
+        tolerance = 180 # 3 mins
+        
+        current_dur = sum(t.duration for t in final_list if hasattr(t, 'duration'))
+        print(f"- Time Check: {int(current_dur/60)}m vs Target {limit_val}m (+/- 3m)")
+        
+        # Extend if too short
+        while current_dur < (target_sec - tolerance) and all_pool:
+            t = all_pool.pop()
+            final_list.append(t)
+            current_dur += getattr(t, 'duration', 0)
+        
+        # Trim if too long
+        while current_dur > (target_sec + tolerance) and len(final_list) > 1:
+            removed = final_list.pop()
+            current_dur -= getattr(removed, 'duration', 0)
+            
+        print(f"- Final Duration: {int(current_dur/60)}m {int(current_dur%60)}s")
+
     # Report
     avg_bpm = 0
     bpms = [int(t.bpm) for t in final_list if hasattr(t, 'bpm') and t.bpm]
@@ -838,9 +908,11 @@ def main():
     args = parser.parse_args()
     
     # Setup Logging if Debug
+    # Setup Logging if Debug
     if args.debug:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_file = auth_manager.CONFIG_DIR / f"fusion-debug-{timestamp}.txt"
+        log_dir = auth_manager.get_log_dir()
+        log_file = log_dir / f"fusion-debug-{timestamp}.txt"
         try:
             sys.stdout = TeeLogger(log_file)
             print(f"Debug logging enabled. Capturing output to: {log_file}")
@@ -916,14 +988,14 @@ def main():
         return
 
     tracks = []
-    if mode == 'basic':
+    if args.mode == "basic" or (config.get("default_mode") == "basic" and not args.mode):
+        print("Mode: Basic")
         tracks = fetch_basic_tracks(session, config)
-    elif mode == 'fusion':
-        tracks = fetch_fusion_tracks(session, config, args.limit)
     else:
-        print(f"Unknown mode: {mode}")
-        return
-
+        print("Mode: Fusion")
+        # Anti-Repeat criteria printed inside function
+        tracks = fetch_fusion_tracks(session, config, args)
+        
     # Shuffle for basic (Fusion does its own interleaving)
     if mode == 'basic':
         random.shuffle(tracks)
