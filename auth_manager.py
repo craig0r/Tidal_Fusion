@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+from pathlib import Path
 import platform
 import sys
 import webbrowser
