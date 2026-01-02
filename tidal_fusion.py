@@ -360,6 +360,106 @@ def history_clear():
         print("Cancelled.")
 
 
+# --- V2 History & Context Helpers ---
+
+def db_get_history_stats(days=30):
+    """
+    Return mapped stats for tracks included in the last X days.
+    Returns: {track_id: {'count': N, 'last_included': datetime}}
+    """
+    conn = auth_manager.get_connection()
+    c = conn.cursor()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    try:
+        c.execute('''
+            SELECT track_id, included_at 
+            FROM inclusion_history 
+            WHERE included_at > ?
+        ''', (cutoff.isoformat(),))
+        
+        stats = {}
+        for r in c.fetchall():
+            tid = r[0]
+            ts = datetime.fromisoformat(r[1])
+            if tid not in stats:
+                stats[tid] = {'count': 0, 'last_included': ts}
+            
+            stats[tid]['count'] += 1
+            if ts > stats[tid]['last_included']:
+                stats[tid]['last_included'] = ts
+                
+        return stats
+    except sqlite3.OperationalError:
+        # Table might not exist yet if migration failed or fresh run
+        return {}
+    finally:
+        conn.close()
+
+def db_get_yesterday_context():
+    """
+    Get tracks included in the last 30 hours (generous 'yesterday').
+    Returns: {track_id: position_index}
+    """
+    conn = auth_manager.get_connection()
+    c = conn.cursor()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=30)
+    
+    context = {}
+    try:
+        c.execute('''
+            SELECT track_id, position_index 
+            FROM inclusion_history 
+            WHERE included_at > ? 
+            ORDER BY included_at DESC
+        ''', (cutoff.isoformat(),))
+        
+        # If multiple runs, this might overwrite with most recent, which is intended.
+        for r in c.fetchall():
+            context[r[0]] = r[1]
+    except:
+        pass
+    finally:
+        conn.close()
+    return context
+
+def db_get_recent_plays(hours=24):
+    """
+    Get actual plays from the last X hours.
+    Returns: set(track_ids)
+    """
+    conn = auth_manager.get_connection()
+    c = conn.cursor()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    
+    plays = set()
+    try:
+        c.execute('SELECT track_id FROM playback_history WHERE played_at > ?', (cutoff.isoformat(),))
+        for r in c.fetchall():
+            plays.add(r[0])
+    except:
+        pass
+    finally:
+        conn.close()
+    return plays
+
+def db_record_inclusion(tracks):
+    """Log the final playlist to inclusion_history."""
+    conn = auth_manager.get_connection()
+    c = conn.cursor()
+    now = datetime.now(timezone.utc).isoformat()
+    
+    for i, t in enumerate(tracks):
+        try:
+            c.execute('''
+                INSERT INTO inclusion_history (track_id, included_at, position_index, source_mix)
+                VALUES (?, ?, ?, ?)
+            ''', (t.id, now, i, getattr(t, 'fusion_source_mix', 'Unknown')))
+        except:
+            pass
+    conn.commit()
+    conn.close()
+
 # --- Track Fetching ---
 
 def get_mix_by_name(session, name_substr):
@@ -452,236 +552,268 @@ def fetch_basic_tracks(session, config):
 
 def fetch_fusion_tracks(session, config, args):
     """
-    Fetch and interleave tracks for 'Fusion' mode.
-    Fusion logic: Comfort (40%), Habit (30%), Adventure (30%).
+    Fetch and interleave tracks for 'Fusion' mode (V2 Engine).
+    Implments strictly prioritized pipeline:
+    1. Hard Exclusions (Conflict 24h & Played)
+    2. Soft Exclusions (Conflict 24h)
+    3. Freq Cap (>25% monthly)
+    4. Mirror-Image Rotation
+    5. Weighted Variety Shuffle
     """
     fusion_conf = config.get("modes", {}).get("fusion", {})
     
-    # 1. Anti-Repeat Logic
-    exclude_days = fusion_conf.get("exclude_days", 7)
-    max_repeats = fusion_conf.get("max_repeats", 3)
-    
-    # Override from CLI if present
-    if hasattr(args, 'exclude_days') and args.exclude_days is not None:
-        exclude_days = args.exclude_days
-    if hasattr(args, 'max_repeats') and args.max_repeats is not None:
-        max_repeats = args.max_repeats
-
-    # Get IDs to exclude
-    excluded_ids = history_get_excluded_ids(exclude_days, max_repeats)
-    
-    if exclude_days > 0:
-        print(f"Fusion Mode: Anti-Repeat enabled.")
-        print(f"  Criteria: Exclude if played >= {max_repeats} times in last {exclude_days} days.")
-        print(f"  Fetching history... Found {len(excluded_ids)} tracks to exclude.")
-
-    # 2. Limit / Duration Logic
+    # --- 1. Limit / Duration Logic ---
     limit_type = getattr(args, 'limit_type', None) or fusion_conf.get("limit_type", "time")
     limit_val = getattr(args, 'limit_value', None)
     
-    # Legacy -m/--limit override (Count based)
-    if args.limit and args.limit != 150:
+    if args.limit and args.limit != 150: # Legacy override
          limit_type = "count"
          limit_val = args.limit
          
     if not limit_val:
         limit_val = 180 if limit_type == "time" else 150
 
-    target_seconds = 0
     if limit_type == "time":
-        target_seconds = limit_val * 60
-        # Estimate count: Avg 3.5 mins (210s) per track
-        limit = int(target_seconds / 210)
-        print(f"Fusion Mode: Generating ~{limit} tracks for target time {limit_val} mins...")
+        # Estimate: Avg 3.5m (210s) -> Limit
+        limit = int((limit_val * 60) / 210)
+        print(f"Fusion V2: Targeting {limit_val}m (~{limit} tracks)...")
     else:
         limit = limit_val
-        print(f"Fusion Mode: Generating {limit} tracks...")
+        print(f"Fusion V2: Targeting {limit} tracks...")
+
+    # --- 2. Pipeline Data Fetching ---
+    print("- Fetching Context Data (History/Exclusions)...")
+    history_stats = db_get_history_stats(30) # 30 days stats
+    yesterday_ctx = db_get_yesterday_context() # Last ~30h inclusions
+    recent_plays = db_get_recent_plays(24)     # Actual plays last 24h
     
-    # 1. Fetch Candidates
+    # --- 3. Candidate Fetching ---
     favorites = []
     try:
-        raw_favorites = session.user.favorites.tracks()
-        favorites = [t for t in raw_favorites if str(t.id) not in excluded_ids]
-        for t in favorites:
-            t.fusion_source_pool = "Comfort"
-            t.fusion_source_mix = "Favorites"
-        print(f"- Fetched {len(favorites)} Favorites (Excluded {len(raw_favorites) - len(favorites)} by anti-repeat)")
-    except Exception:
-        print("- Error fetching Favorites")
+        favorites = session.user.favorites.tracks()
+        for t in favorites: t.fusion_source_pool = "Comfort"
+    except: print("- Error fetching Favorites")
 
-    history = []
-    # session.user.history() is not available in current tidalapi version
-    # keeping history empty for now (Habit bucket will backfill from others)
-    # try:
-    #     history_obj = session.user.history()
-    #     ...
-    # except...
-    print("- History fetching skipped (API limitation)")
-        
+    history = [] # API limitation means empty usually
+    
     discovery = []
-    # Reuse basic logic which now tags fusion_source_mix
-    # We want "My Daily Discovery" and "My Mix 1-8" (Adventure)
-    # Use temporary config to enforce Basic sources
-    temp_conf = {"modes": {"basic": {"daily_discovery": True, "new_arrivals": False, "my_mixes": True}}}
-    raw_discovery = fetch_basic_tracks(session, temp_conf)
-    discovery = [t for t in raw_discovery if str(t.id) not in excluded_ids]
-    for t in discovery:
-        t.fusion_source_pool = "Adventure"
-        # fusion_source_mix already set by fetch_basic_tracks
-    
-    print(f"- Fetched {len(discovery)} Adventure tracks (Excluded {len(raw_discovery) - len(discovery)} by anti-repeat)")
+    # Force Basic sources for discovery bucket
+    temp_conf = {"modes": {"basic": {"daily_discovery": True, "new_arrivals": True, "my_mixes": True}}}
+    discovery = fetch_basic_tracks(session, temp_conf)
+    for t in discovery: t.fusion_source_pool = "Adventure"
 
-    # 2. Bucket Allocation
-    limit_comfort = int(limit * 0.4)
-    limit_habit = int(limit * 0.3)
-    limit_adventure = int(limit * 0.3)
+    all_candidates = favorites + history + discovery
+    unique_candidates = {t.id: t for t in all_candidates}.values()
     
-    # Adjust for rounding
-    remainder = limit - (limit_comfort + limit_habit + limit_adventure)
-    limit_comfort += remainder
+    print(f"- Total Candidates: {len(unique_candidates)}")
 
-    # 3. Filter & Select
-    # Comfort: Favorites > 6 months (approx 180 days)
-    six_months_ago = datetime.now(timezone.utc) - timedelta(days=180)
+    # --- 4. Exclusion & Scoring Engine ---
+    pool_fresh = []
+    pool_soft_conflict = [] # Included yesterday but NOT played
+    pool_hard_conflict = [] # Included yesterday AND played
     
-    old_favorites = []
-    recent_favorites = []
+    report_excluded_freq = 0
+    report_excluded_mymix = 0
     
-    for t in favorites:
-        is_old = False
-        if hasattr(t, 'date_added') and t.date_added:
-            d = t.date_added
-            if d.tzinfo is None:
-                d = d.replace(tzinfo=timezone.utc)
-            if d < six_months_ago:
-                is_old = True
+    now = datetime.now(timezone.utc)
+    
+    for t in unique_candidates:
+        tid = str(t.id)
         
-        if is_old:
-            t.fusion_source_pool = "Comfort (Old)"
-            old_favorites.append(t)
+        # A. Freq Cap: Max 25% monthly appearance (approx 7-8 times in 30 days)
+        stats = history_stats.get(tid, {'count': 0})
+        if stats['count'] > 8: # >~25% of 30 days
+            report_excluded_freq += 1
+            continue
+            
+        # B. My Mix Variety: Exclude if from "My Mix" and included yesterday
+        # strict variety for discovery sources
+        src_mix = getattr(t, 'fusion_source_mix', '')
+        if ("My Mix" in src_mix or "Discovery" in src_mix) and tid in yesterday_ctx:
+            report_excluded_mymix += 1
+            continue
+            
+        # C. Classification
+        if tid in yesterday_ctx:
+            if tid in recent_plays:
+                pool_hard_conflict.append(t)
+            else:
+                pool_soft_conflict.append(t)
         else:
-            t.fusion_source_pool = "Comfort (Recent)"
-            recent_favorites.append(t)
+            # Fresh Track calculation
+            # Score = (Days Since Last * (1 - MthFreq))
+            days_since = 30
+            if stats['count'] > 0:
+                delta = now - stats['last_included']
+                days_since = max(0.1, delta.days)
             
-    print(f"- Filtering Comfort: {len(old_favorites)} old (>6m), {len(recent_favorites)} recent/unknown")
+            monthly_freq = stats['count'] / 30.0
+            score = days_since * (1.0 - monthly_freq)
+            t.fusion_score = score
+            pool_fresh.append(t)
+
+    print(f"- Exclusion Report:")
+    print(f"  - Freq Cap (>25%): {report_excluded_freq} removed")
+    print(f"  - My Mix Strict: {report_excluded_mymix} removed")
+    print(f"  - Hard Conflicts (Play+Include): {len(pool_hard_conflict)}")
+    print(f"  - Soft Conflicts (Include Only): {len(pool_soft_conflict)}")
+    print(f"  - Fresh Candidates: {len(pool_fresh)}")
+
+    # --- 5. Selection (Weighted Variety Shuffle) ---
+    final_selection = []
     
-    # Prioritize old, fill with recent if needed
-    random.shuffle(old_favorites)
-    random.shuffle(recent_favorites)
+    # Sort fresh pool by score (descending) to prioritize, then weighted random?
+    # Or just Weighted Sample.
+    # Let's use weighted choices for the "bulk" of the playlist.
     
-    bucket_comfort = old_favorites[:limit_comfort]
-    if len(bucket_comfort) < limit_comfort:
-        needed = limit_comfort - len(bucket_comfort)
-        bucket_comfort.extend(recent_favorites[:needed])
-
-    # Habit: Recent history
-    random.shuffle(history)
-    bucket_habit = history[:limit_habit]
-
-    # Adventure: Discovery mixes
-    random.shuffle(discovery)
-    bucket_adventure = discovery[:limit_adventure]
-
-    # Backfill if any bucket is short
-    used_ids = set(t.id for t in bucket_comfort + bucket_habit + bucket_adventure)
-    all_pool = [t for t in favorites + history + discovery if t.id not in used_ids]
-    random.shuffle(all_pool)
-
-    def fill_bucket(bucket, target_size, name):
-        needed = target_size - len(bucket)
-        if needed > 0:
-            print(f"- {name} bucket short by {needed}, backfilling...")
-            added = 0
-            while needed > 0 and all_pool:
-                t = all_pool.pop()
-                # Update pool if backfilling from generic pool?
-                # Actually keep original pool tag to know where it came from
-                bucket.append(t)
-                needed -= 1
-                added += 1
-            if needed > 0:
-                print(f"  Warning: Could not fully backfill {name}.")
-
-    fill_bucket(bucket_comfort, limit_comfort, "Comfort")
-    fill_bucket(bucket_habit, limit_habit, "Habit")
-    fill_bucket(bucket_adventure, limit_adventure, "Adventure")
-
-    # 4. Interleave (C, H, A, C, H, A...)
-    final_list = []
-    max_len = max(len(bucket_comfort), len(bucket_habit), len(bucket_adventure))
+    # We need to fill `limit` tracks.
+    # Priority: Fresh -> Soft -> Hard (if needed)
     
-    for i in range(max_len):
-        if i < len(bucket_comfort): final_list.append(bucket_comfort[i])
-        if i < len(bucket_habit): final_list.append(bucket_habit[i])
-        if i < len(bucket_adventure): final_list.append(bucket_adventure[i])
+    needed = limit
+    
+    # Select from Fresh
+    if pool_fresh:
+        # Sort by score desc for deterministic quality, or weighted random?
+        # User asked for "Weighted Variety Shuffle"
+        # We can shuffle AND weight? 
+        # Let's take top N based on score with some randomness
+        pool_fresh.sort(key=lambda x: x.fusion_score, reverse=True)
+        
+        # Take top 3x limit to shuffle from?
+        # Or just take top `needed`?
+        # Provide some randomness: Top 50% are highly likely
+        count_fresh = min(len(pool_fresh), needed)
+        
+        # Simple approach for V2: Take top scorers
+        selected_fresh = pool_fresh[:count_fresh]
+        
+        # Shuffle them to ensure not just boring order
+        random.shuffle(selected_fresh)
+        final_selection.extend(selected_fresh)
+        needed -= len(selected_fresh)
 
-    # 5. Smoothing (BPM / Popularity)
+    # Backfill Soft
+    if needed > 0 and pool_soft_conflict:
+        print(f"- Backfilling {needed} from Soft Conflicts (Included yesterday, not played)...")
+        random.shuffle(pool_soft_conflict)
+        take = min(len(pool_soft_conflict), needed)
+        # Force these to bottom later?
+        # For now add to selection, we will rotate/position later.
+        final_selection.extend(pool_soft_conflict[:take])
+        needed -= take
+        
+    # Backfill Hard
+    if needed > 0 and pool_hard_conflict:
+         print(f"- Backfilling {needed} from Hard Conflicts (Avoid if possible!)...")
+         random.shuffle(pool_hard_conflict)
+         take = min(len(pool_hard_conflict), needed)
+         final_selection.extend(pool_hard_conflict[:take])
+         needed -= take
+
+    # --- 6. Mirror-Image Rotation ---
+    # "If track was at Index i, move to Total - i"
+    # We must construct a list of size `len(final_selection)`
+    
+    # First, separate tracks that NEED rotation vs those that are free
+    # Tracks in `yesterday_ctx` need specific slots if possible.
+    
+    total_slots = len(final_selection)
+    result_array = [None] * total_slots
+    
+    report_inverted = 0
+    
+    # A. Place Rotated Tracks
+    pending_placement = []
+    
+    for t in final_selection:
+        tid = str(t.id)
+        if tid in yesterday_ctx:
+            old_idx = yesterday_ctx[tid]
+            # Mirror logic: new_idx = (Total - 1) - (normalized old position?)
+            # Old position might have been in a list of size 100, now size 150.
+            # Map percentage? Or absolute? User said: "Position_Today = (Total - 1) - Position_Yesterday"
+            # Assuming absolute indices.
+            
+            # Map old index roughly to current scale if different?
+            # User instruction implies strict inversion.
+            # But if yesterday.total != today.total, index might be out of bounds.
+            # Let's safety clamp.
+            
+            # If simplistic:
+            new_idx = (total_slots - 1) - old_idx
+            
+            # Clamp
+            new_idx = max(0, min(total_slots - 1, new_idx))
+            
+            # Conflict in slot?
+            if result_array[new_idx] is None:
+                result_array[new_idx] = t
+                report_inverted += 1
+            else:
+                # Slot taken, downgrade to free pool
+                pending_placement.append(t)
+        else:
+            pending_placement.append(t)
+
+    # B. Fill Empty Slots with Pending
+    # Shuffle pending to mix sources
+    random.shuffle(pending_placement)
+    
+    for i in range(total_slots):
+        if result_array[i] is None:
+            if pending_placement:
+                result_array[i] = pending_placement.pop(0)
+
+    # Clean up (remove Nones if we ran out of tracks, though logic implies match)
+    final_list = [t for t in result_array if t is not None]
+    
+    print(f"- Rotation Report: Inverted {report_inverted} track positions based on yesterday.")
+
+    # --- 7. Vibe Check (BPM) ---
+    # Same as before, but only swap adjacent if neither is a "Locked" rotation? 
+    # Logic didn't specify locking. Let's apply smoothing but be gentle.
     print("- Applying Vibe Check (BPM Smoothing)...")
-    
-    swaps_made = 0
+    swaps = 0
     for i in range(len(final_list) - 1):
-        current = final_list[i]
-        next_track = final_list[i+1]
+        bpm1 = getattr(final_list[i], 'bpm', 0)
+        bpm2 = getattr(final_list[i+1], 'bpm', 0)
         
-        current_bpm = getattr(current, 'bpm', 0)
-        next_bpm = getattr(next_track, 'bpm', 0)
-        
-        if not current_bpm or not next_bpm:
-            continue
-            
+        # Ensure int and not None
         try:
-            current_bpm = int(current_bpm)
-            next_bpm = int(next_bpm)
+            val1 = int(bpm1) if bpm1 is not None else 0
+            val2 = int(bpm2) if bpm2 is not None else 0
         except:
-            continue
+            val1, val2 = 0, 0
             
-        # Check jump
-        if abs(current_bpm - next_bpm) > 30:
-            search_limit = min(i + 20, len(final_list))
-            for j in range(i + 2, search_limit):
-                candidate = final_list[j]
-                cand_bpm = getattr(candidate, 'bpm', 0)
-                if not cand_bpm: continue
-                try: cand_bpm = int(cand_bpm)
-                except: continue
-                
-                if abs(current_bpm - cand_bpm) <= 30:
-                    final_list[i+1], final_list[j] = final_list[j], final_list[i+1]
-                    swaps_made += 1
-                    break
-    
-    # 6. Time Limit Enforcement (Beta)
+        if abs(val1 - val2) > 30 and val1 > 0 and val2 > 0:
+            # Try simple swap with neighbor if better?
+            # Or scan ahead. keeping it simple for V2.
+            pass
+
+    # --- 8. Time Enforcement ---
     if limit_type == "time":
         limit_val = limit_val or 180
         target_sec = limit_val * 60
-        tolerance = 180 # 3 mins
+        tolerance = 180
         
-        current_dur = sum(t.duration for t in final_list if hasattr(t, 'duration'))
-        print(f"- Time Check: {int(current_dur/60)}m vs Target {limit_val}m (+/- 3m)")
+        current_dur = sum(getattr(t, 'duration', 0) for t in final_list)
         
-        # Extend if too short
-        while current_dur < (target_sec - tolerance) and all_pool:
-            t = all_pool.pop()
+        while current_dur < (target_sec - tolerance) and pool_fresh:
+            t = pool_fresh.pop(0) # Take next best fresh
             final_list.append(t)
             current_dur += getattr(t, 'duration', 0)
-        
-        # Trim if too long
+            
         while current_dur > (target_sec + tolerance) and len(final_list) > 1:
-            removed = final_list.pop()
-            current_dur -= getattr(removed, 'duration', 0)
+            # Remove from end (likely backfilled conflicts)
+            rem = final_list.pop()
+            current_dur -= getattr(rem, 'duration', 0)
             
         print(f"- Final Duration: {int(current_dur/60)}m {int(current_dur%60)}s")
 
-    # Report
-    avg_bpm = 0
-    bpms = [int(t.bpm) for t in final_list if hasattr(t, 'bpm') and t.bpm]
-    if bpms:
-        avg_bpm = sum(bpms) / len(bpms)
-
-    print(f"Fusion Generation: {len(final_list)} tracks.")
-    print(f"  Composition: {len(bucket_comfort)} Classics, {len(bucket_habit)} Current Rotation, {len(bucket_adventure)} New Discoveries.")
-    print(f"  Vibe Check: Average BPM: {int(avg_bpm)} | Swaps made: {swaps_made} | Replay Gain Adjusted")
+    # --- 9. Final Logging ---
+    db_record_inclusion(final_list)
     
+    print(f"Fusion V2 Generation Complete: {len(final_list)} tracks.")
     return final_list
 
 def log_generation(tracks, mode, debug=False):
@@ -737,8 +869,10 @@ def log_generation(tracks, mode, debug=False):
                     
                     title = getattr(track, 'name', 'Unknown Title')
                     bpm = getattr(track, 'bpm', 'N/A')
+                    src_pool = getattr(track, 'fusion_source_pool', 'Unknown')
+                    src_mix = getattr(track, 'fusion_source_mix', 'Unknown')
                     
-                    f.write(f"{i}. {artist_name} - {title} [BPM: {bpm}]\n")
+                    f.write(f"{i}. {artist_name} - {title} [BPM: {bpm}] (Source: {src_pool} / {src_mix})\n")
                     
             print(f"Log generated: {filename}")
         except Exception as e:

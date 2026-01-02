@@ -80,7 +80,7 @@ def init_db():
         )
     ''')
     
-    # 3. History Table
+    # 3. History Table (Legacy/General)
     c.execute('''
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +90,26 @@ def init_db():
             timestamp DATETIME,
             bpm INTEGER,
             style TEXT
+        )
+    ''')
+
+    # 4. Playback History (Actual User Plays) - V2
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS playback_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id TEXT,
+            played_at DATETIME
+        )
+    ''')
+
+    # 5. Inclusion History (Generated Playlist Content/Position) - V2
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS inclusion_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id TEXT,
+            included_at DATETIME,
+            position_index INTEGER,
+            source_mix TEXT
         )
     ''')
     
