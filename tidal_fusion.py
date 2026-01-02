@@ -550,6 +550,102 @@ def fetch_basic_tracks(session, config):
 
     return tracks
 
+import re
+
+def deduplicate_remasters(tracks):
+    """
+    Deduplicate tracks where one is a 'Remaster' of another.
+    Rules:
+    1. Group by (Artist, Base Title).
+    2. 'Base Title' strips 'Remaster' info but KEEPS 'Remix' info.
+    3. Winner Logic:
+       - Prefer Remaster over Non-Remaster.
+       - Prefer Newest Year (if parsed from title).
+    """
+    if not tracks: return []
+    
+    # Regex to find Remaster info: (2015 Remaster), - Remastered, [Remaster], etc.
+    # Exclude matches that contain "Remix" or "Mix" (unless specifically "Remastered Mix"?)
+    # Generally "Remix" implies distinct version.
+    
+    # Matches: parens/brackets/dash + content containing 'Remaster' + closing
+    # Capture year if possible.
+    remaster_regex = re.compile(r"[\(\[\-]\s*(?:(\d{4})?\s*)?(?:Digital|Digitally|24-Bit|20\d\d)?\s*Remaster(?:ed)?\s*(?:(\d{4})?)[\)\]]?", re.IGNORECASE)
+    
+    # Grouping
+    groups = {}
+    
+    for t in tracks:
+        title = getattr(t, 'name', '')
+        artist = "Unknown"
+        if getattr(t, 'artist', None): artist = t.artist.name
+        elif getattr(t, 'artists', None): artist = t.artists[0].name
+        
+        # Determine Base Title
+        # Strip Remaster info
+        match = remaster_regex.search(title)
+        
+        base_title = title
+        year_score = 0
+        is_remaster = False
+        
+        if match:
+            # Check if "Remix" is in the full title but NOT in the match (or in match?)
+            # If "Remix" is in title, treat as unique unless the Remaster tag captures it?
+            # Our regex is specific to "Remaster".
+            
+            # If title has "Remix" elsewhere, it's a Remix. 
+            # E.g. "Song (Club Remix) (2015 Remaster)" -> Base: "Song (Club Remix)"
+            # This logic works.
+            
+            # Remove the match from title to get base
+            base_title = remaster_regex.sub("", title).strip()
+            is_remaster = True
+            
+            # Score
+            # Try to grab year from match grp 1 or 2
+            y1, y2 = match.groups()
+            if y1: year_score = int(y1)
+            elif y2: year_score = int(y2)
+            else: year_score = 1 # Generic remaster > 0
+            
+        key = (artist.lower(), base_title.lower())
+        
+        if key not in groups: groups[key] = []
+        groups[key].append({
+            'track': t,
+            'is_remaster': is_remaster,
+            'year': year_score,
+            'title': title
+        })
+        
+    # Selection
+    final_list = []
+    removed_count = 0
+    
+    for key, candidates in groups.items():
+        if len(candidates) == 1:
+            final_list.append(candidates[0]['track'])
+            continue
+            
+        # Conflict: Pick Winner
+        # Sort by: is_remaster (desc), year (desc)
+        # So True > False, 2020 > 2015 > 1 > 0
+        candidates.sort(key=lambda x: (x['is_remaster'], x['year']), reverse=True)
+        
+        winner = candidates[0]
+        final_list.append(winner['track'])
+        removed_count += (len(candidates) - 1)
+        
+        # Debug/Info if interesting
+        # if len(candidates) > 1:
+        #    print(f"  - Deduped '{key[1]}': Kept '{winner['title']}' vs {[c['title'] for c in candidates[1:]]}")
+
+    if removed_count > 0:
+        print(f"- Remaster Dedup: Removed {removed_count} older/duplicate versions.")
+        
+    return final_list
+
 def fetch_fusion_tracks(session, config, args):
     """
     Fetch and interleave tracks for 'Fusion' mode (V2 Engine).
@@ -591,7 +687,9 @@ def fetch_fusion_tracks(session, config, args):
     favorites = []
     try:
         favorites = session.user.favorites.tracks()
-        for t in favorites: t.fusion_source_pool = "Comfort"
+        for t in favorites: 
+            t.fusion_source_pool = "Comfort"
+            t.fusion_source_mix = "Favourites"
     except: print("- Error fetching Favorites")
 
     history = [] # API limitation means empty usually
@@ -603,7 +701,10 @@ def fetch_fusion_tracks(session, config, args):
     for t in discovery: t.fusion_source_pool = "Adventure"
 
     all_candidates = favorites + history + discovery
-    unique_candidates = {t.id: t for t in all_candidates}.values()
+    unique_candidates_raw = {t.id: t for t in all_candidates}.values()
+    
+    # Run Remaster Deduplication
+    unique_candidates = deduplicate_remasters(unique_candidates_raw)
     
     print(f"- Total Candidates: {len(unique_candidates)}")
 
