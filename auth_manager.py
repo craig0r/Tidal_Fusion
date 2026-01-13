@@ -89,7 +89,8 @@ def init_db():
             artist_name TEXT,
             timestamp DATETIME,
             bpm INTEGER,
-            style TEXT
+            style TEXT,
+            source TEXT
         )
     ''')
 
@@ -112,6 +113,13 @@ def init_db():
             source_mix TEXT
         )
     ''')
+    
+    # Check for missing columns in existing tables (Migration)
+    try:
+        c.execute("SELECT source FROM history LIMIT 1")
+    except sqlite3.OperationalError:
+        print("Migrating DB: Adding 'source' column to history table...")
+        c.execute("ALTER TABLE history ADD COLUMN source TEXT")
     
     conn.commit()
     conn.close()

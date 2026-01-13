@@ -12,9 +12,52 @@ import tidalapi
 import auth_manager
 
 # Constants
-# CONFIG_FILE removed, using DB
 DEFAULT_PLAYLIST_NAME = "Tidal Fusion"
 MIX_NAMES_GENERATED = [f"My Mix {i}" for i in range(1, 9)]
+
+TIDAL_COMPLIANCE_HEADER = (
+    "----------------------------------------------------------------------\n"
+    "Data provided by TIDAL. https://www.tidal.com\n"
+    "This application is not endorsed by TIDAL or any TIDAL Artist.\n"
+    "----------------------------------------------------------------------"
+)
+
+# --- Logger ---
+class TeeLogger(object):
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, "a", encoding="utf-8")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+def setup_logging():
+    """Setup TeeLogger to capture all output."""
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_dir = auth_manager.get_log_dir()
+    log_file = log_dir / f"fusion-log-{timestamp}.txt"
+    
+    # Preserve original stdout/stderr just in case, though we act as a tee
+    # sys.stdout = TeeLogger(log_file)
+    # We want to capture everything from now on.
+    try:
+        tee = TeeLogger(log_file)
+        sys.stdout = tee
+        # sys.stderr = tee # Optional: capture errors too? Yes, good for debugging.
+        
+        print(f"Logging initialized: {log_file}")
+        print(TIDAL_COMPLIANCE_HEADER)
+        print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        return log_file
+    except Exception as e:
+        print(f"Failed to setup logging: {e}")
+        return None
 
 # --- Configuration ---
 
@@ -22,32 +65,38 @@ def load_config():
     """Load configuration from database via auth_manager."""
     config = auth_manager.get_config()
     
-    # Default Config Structure if empty
+    # Default Config Structure if empty or legacy
     if not config:
         config = {
-            "default_mode": "basic",
+            "exclude_days": 7,
+            "max_repeats": 3,
             "max_retries": 3,
-            "modes": {
-                "basic": {
-                    "daily_discovery": True,
-                    "new_arrivals": True,
-                    "my_mixes": True
-                },
-                "fusion": {
-                    "exclude_days": 7,
-                    "max_repeats": 3
-                }
-            }
+            "limit_type": "time",
+            "limit_value": 180
         }
         # Save defaults immediately
         auth_manager.save_config(config)
     
-    # Ensure new keys exist if loading old config
-    if "max_retries" not in config:
-        config["max_retries"] = 3
-    if "fusion" in config.get("modes", {}) and "max_repeats" not in config["modes"]["fusion"]:
-        config["modes"]["fusion"]["max_repeats"] = 3
-    
+    # Migration/Normalization: If "modes" exists (Legacy), flatten it
+    if "modes" in config:
+        print("Migrating legacy configuration...")
+        fusion_conf = config["modes"].get("fusion", {})
+        
+        if "exclude_days" not in config:
+             config["exclude_days"] = fusion_conf.get("exclude_days", 7)
+        if "max_repeats" not in config:
+             config["max_repeats"] = fusion_conf.get("max_repeats", 3)
+        if "limit_type" not in config:
+             config["limit_type"] = fusion_conf.get("limit_type", "time")
+        if "limit_value" not in config:
+             config["limit_value"] = fusion_conf.get("limit_value", 180)
+             
+        del config["modes"]
+        if "default_mode" in config:
+            del config["default_mode"]
+            
+        auth_manager.save_config(config)
+        
     return config
 
 def save_config(config):
@@ -55,201 +104,83 @@ def save_config(config):
     auth_manager.save_config(config)
     print("Configuration saved.")
 
-def configure_basic_mode(config):
-    """Interactive menu for Basic Mode."""
-    if "basic" not in config["modes"]: config["modes"]["basic"] = {}
-    basic_conf = config["modes"]["basic"]
-    
+def configure_advanced_settings(config):
+    """Interactive menu for Advanced / Fusion Settings."""
     while True:
-        print("\n--- Basic Mode Settings ---")
-        print(f"1. [ {'x' if basic_conf.get('daily_discovery', True) else ' '} ] My Daily Discovery")
-        print(f"2. [ {'x' if basic_conf.get('new_arrivals', True) else ' '} ] My New Arrivals")
-        print(f"3. [ {'x' if basic_conf.get('my_mixes', True) else ' '} ] My Mixes (1-8)")
-        print("4. Back")
+        curr_days = config.get('exclude_days', 7)
+        curr_repeats = config.get('max_repeats', 3)
+        curr_limit_type = config.get('limit_type', 'time')
+        curr_limit_val = config.get('limit_value', 180 if curr_limit_type == 'time' else 150)
+        curr_retries = config.get('max_retries', 3)
         
-        choice = input("Enter choice: ").strip()
-        if choice == '1':
-            basic_conf['daily_discovery'] = not basic_conf.get('daily_discovery', True)
-        elif choice == '2':
-            basic_conf['new_arrivals'] = not basic_conf.get('new_arrivals', True)
-        elif choice == '3':
-            basic_conf['my_mixes'] = not basic_conf.get('my_mixes', True)
-        elif choice == '4':
-            return
-
-def configure_fusion_mode(config):
-    """Interactive menu for Fusion Mode."""
-    if "fusion" not in config["modes"]: config["modes"]["fusion"] = {}
-    fusion_conf = config["modes"]["fusion"]
-    
-    while True:
-        curr_days = fusion_conf.get('exclude_days', 7)
-        curr_repeats = fusion_conf.get('max_repeats', 3)
-        curr_limit_type = fusion_conf.get('limit_type', 'time')
-        curr_limit_val = fusion_conf.get('limit_value', 180 if curr_limit_type == 'time' else 150)
-        
-        print("\n--- Fusion Mode Settings ---")
+        print("\n--- Advanced Settings ---")
         print(f"1. Set 'Exclude Days' (Anti-Repeat Window) [Current: {curr_days}]")
         print(f"2. Set 'Max Repeats' (Max plays in window) [Current: {curr_repeats}]")
         print(f"3. Set Limit Type (Time/Count) [Current: {curr_limit_type}]")
         print(f"4. Set Limit Value (Mins or Tracks) [Current: {curr_limit_val}]")
-        print("5. Back")
+        print(f"5. Set Max API Retries [Current: {curr_retries}]")
+        print("6. Back")
         
         choice = input("Enter choice: ").strip()
         if choice == '1':
             val = input(f"Enter days to exclude (0 to disable) [{curr_days}]: ").strip()
             if val:
                 try:
-                    fusion_conf['exclude_days'] = int(val)
+                    config['exclude_days'] = int(val)
                 except ValueError: print("Invalid number.")
         elif choice == '2':
             val = input(f"Enter max repeats allowed (e.g. 3) [{curr_repeats}]: ").strip()
             if val:
                 try:
-                    fusion_conf['max_repeats'] = int(val)
+                    config['max_repeats'] = int(val)
                 except ValueError: print("Invalid number.")
         elif choice == '3':
             val = input(f"Enter type (time/count) [{curr_limit_type}]: ").strip().lower()
             if val in ['time', 'count']:
-                fusion_conf['limit_type'] = val
-                # Reset default value if switching type to avoid 150 mins or 180 tracks if wild
-                if val == 'time' and fusion_conf.get('limit_value', 0) < 60: 
-                     fusion_conf['limit_value'] = 180
-                elif val == 'count' and fusion_conf.get('limit_value', 0) > 500:
-                     fusion_conf['limit_value'] = 150
+                config['limit_type'] = val
+                config['limit_value'] = 180 if val == 'time' else 150
             else:
                 print("Invalid type.")
         elif choice == '4':
             val = input(f"Enter value ({'minutes' if curr_limit_type=='time' else 'tracks'}) [{curr_limit_val}]: ").strip()
             if val:
                 try:
-                   fusion_conf['limit_value'] = int(val)
+                   config['limit_value'] = int(val)
                 except ValueError: print("Invalid number.")
         elif choice == '5':
-            return
-
-def configure_modes_menu(config):
-    """Submenu for selecting a mode to configure."""
-    while True:
-        print("\n--- Mode-Specific Configurations ---")
-        print("1. Basic Mode Settings")
-        print("2. Fusion Mode Settings")
-        print("3. Back")
-        
-        choice = input("Enter choice: ").strip()
-        if choice == '1':
-            configure_basic_mode(config)
-        elif choice == '2':
-            configure_fusion_mode(config)
-        elif choice == '3':
-            return
-
-def configure_global_settings(config):
-    """Global settings menu."""
-    while True:
-        print("\n--- Global Settings ---")
-        print(f"1. Set Default Run Mode [Current: {config.get('default_mode', 'basic')}]")
-        print(f"2. Set Max API Retries [Current: {config.get('max_retries', 3)}]")
-        print("3. Back")
-        
-        choice = input("Enter choice: ").strip()
-        if choice == '1':
-            m = input("Enter default mode (basic/fusion): ").strip().lower()
-            if m in ['basic', 'fusion']:
-                config['default_mode'] = m
-            else:
-                print("Invalid mode.")
-        elif choice == '2':
             val = input(f"Enter max retries: ").strip()
             if val:
                 try:
                     config['max_retries'] = int(val)
                 except ValueError: print("Invalid number.")
-        elif choice == '3':
+        elif choice == '6':
             return
 
 def configure_main(config):
     """Main Configuration Menu Entry Point."""
     while True:
-        print("\n--- Tidal Fusion Configuration Main Menu ---")
-        print("1. Mode-Specific Configurations (Basic, Fusion)")
-        print("2. Global Settings (Default Mode, Retries)")
-        print("3. Run Authentication")
-        print("4. Clear Authentication Data")
-        print("5. Save and Exit")
-        print("6. Exit without Saving")
+        print("\n--- Tidal Fusion Configuration ---")
+        print(TIDAL_COMPLIANCE_HEADER)
+        print("1. Advanced Settings")
+        print("2. Run Authentication")
+        print("3. Clear Authentication Data (Manual)")
+        print("4. Save and Exit")
+        print("5. Exit without Saving")
         
         choice = input("Enter choice: ").strip()
         
         if choice == '1':
-            configure_modes_menu(config)
+            configure_advanced_settings(config)
         elif choice == '2':
-            configure_global_settings(config)
-        elif choice == '3':
             auth_manager.login()
-        elif choice == '4':
+        elif choice == '3':
             print("Please delete 'fusion.db' or tokens manually for now.")
-        elif choice == '5':
+        elif choice == '4':
             save_config(config)
             return
-        elif choice == '6':
+        elif choice == '5':
             return
         
-# --- Fetching Logic ---
-
-def fetch_basic_tracks(session, config):
-    """
-    Gather tracks from mixes/favorites.
-    """
-    basic_conf = config["modes"]["basic"]
-    found_tracks = {}
-    
-    target_names = []
-    if basic_conf.get('daily_discovery'): target_names.append("My Daily Discovery")
-    if basic_conf.get('new_arrivals'): target_names.append("My New Arrivals")
-    if basic_conf.get('my_mixes'): target_names.extend(MIX_NAMES_GENERATED)
-
-    print(f"Basic Mode: Scanning for {len(target_names)} playlists...")
-
-    def process_container(container):
-        name = getattr(container, 'title', getattr(container, 'name', ''))
-        if name in target_names:
-            print(f"Found '{name}'")
-            try:
-                items = []
-                if hasattr(container, 'tracks') and callable(container.tracks):
-                    items = container.tracks()
-                elif hasattr(container, 'items') and callable(container.items):
-                    items = container.items()
-                
-                count = 0
-                for track in items:
-                    if not hasattr(track, 'id'): continue
-                    if track.id not in found_tracks:
-                        # Attach metadata for logging
-                        track.fusion_source_mix = name 
-                        found_tracks[track.id] = track
-                        count += 1
-            except Exception as e:
-                print(f"Error scanning '{name}': {e}")
-
-    # Scan Favorites
-    try:
-        for pl in session.user.favorites.playlists():
-            process_container(pl)
-    except Exception as e:
-        print(f"Error scanning favorites: {e}")
-
-    # Scan Mixes
-    try:
-        if hasattr(session, 'mixes'):
-            for mix in session.mixes():
-                process_container(mix)
-    except:
-        pass
-
-    return list(found_tracks.values())
-
 # --- History Management ---
 
 def history_log_tracks(tracks):
@@ -268,21 +199,24 @@ def history_log_tracks(tracks):
             elif getattr(t, 'artists', None):
                 artist_name = ", ".join([a.name for a in t.artists])
             
+            # Get Source
+            source = getattr(t, 'fusion_source_mix', 'Unknown')
+            
             c.execute('''
-                INSERT INTO history (track_id, track_name, artist_name, timestamp, bpm, style)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO history (track_id, track_name, artist_name, timestamp, bpm, style, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (
                 str(t.id),
                 getattr(t, 'name', 'Unknown'),
                 artist_name,
                 now.isoformat(),
                 getattr(t, 'bpm', None),
-                None # Style not available
+                None, # Style not available
+                source
             ))
             count += 1
         except Exception as e:
             # duplicate entries or db errors
-            # print(f"Error logging track {t.id}: {e}")
             pass
             
     conn.commit()
@@ -290,60 +224,31 @@ def history_log_tracks(tracks):
     if count > 0:
         print(f"Logged {count} tracks to history.")
 
-def history_get_excluded_ids(days, max_repeats):
-    """
-    Get set of track IDs to exclude based on history.
-    Excludes track if played >= max_repeats times in the last X days.
-    """
-    if days <= 0:
-        return set()
-        
-    conn = auth_manager.get_connection()
-    c = conn.cursor()
-    
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    
-    # Select track_id and count of plays since cutoff
-    c.execute('''
-        SELECT track_id, COUNT(*) 
-        FROM history 
-        WHERE timestamp > ? 
-        GROUP BY track_id
-    ''', (cutoff.isoformat(),))
-    
-    rows = c.fetchall()
-    conn.close()
-    
-    # Filter: Keep ID if count >= max_repeats
-    # Default max_repeats=1 means "exclude if played at least once" (Old behavior)
-    # max_repeats=3 means "exclude if played 3 or more times"
-    excluded = {str(r[0]) for r in rows if r[1] >= max_repeats}
-    
-    return excluded
-
 def history_show(limit=20):
     """Print table of recent history."""
     conn = auth_manager.get_connection()
     c = conn.cursor()
-    c.execute("SELECT track_name, artist_name, timestamp FROM history ORDER BY timestamp DESC LIMIT ?", (limit,))
-    rows = c.fetchall()
-    conn.close()
-    
-    print(f"\nLast {limit} Tracks Generated:")
-    print(f"{'Timestamp':<20} | {'Artist':<30} | {'Track':<40}")
-    print("-" * 96)
-    for r in rows:
-        ts_str = r[2]
-        try:
-            # Handle standardized UTC string
-            ts = datetime.fromisoformat(str(ts_str))
-            # Convert to local for display? Or keep UTC. 
-            # Display: YYYY-MM-DD HH:MM
-            ts_display = ts.strftime("%Y-%m-%d %H:%M")
-        except:
-            ts_display = str(ts_str)[:16]
+    try:
+        c.execute("SELECT track_name, artist_name, timestamp, source FROM history ORDER BY timestamp DESC LIMIT ?", (limit,))
+        rows = c.fetchall()
+        
+        print(f"\nLast {limit} Tracks Generated:")
+        print(f"{'Timestamp':<16} | {'Artist':<25} | {'Track':<30} | {'Source':<20}")
+        print("-" * 100)
+        for r in rows:
+            ts_str = r[2]
+            try:
+                ts_display = str(ts_str)[:16].replace('T', ' ')
+            except:
+                ts_display = str(ts_str)[:16]
             
-        print(f"{ts_display:<20} | {r[1][:28]:<30} | {r[0][:38]:<40}")
+            source = r[3] if len(r) > 3 and r[3] else "Unknown"
+            
+            print(f"{ts_display:<16} | {r[1][:23]:<25} | {r[0][:28]:<30} | {source:<20}")
+    except Exception as e:
+        print(f"Error reading history: {e}")
+    finally:
+        conn.close()
     print("")
 
 def history_clear():
@@ -391,14 +296,13 @@ def db_get_history_stats(days=30):
                 
         return stats
     except sqlite3.OperationalError:
-        # Table might not exist yet if migration failed or fresh run
         return {}
     finally:
         conn.close()
 
 def db_get_yesterday_context():
     """
-    Get tracks included in the last 30 hours (generous 'yesterday').
+    Get tracks included in the last 30 hours.
     Returns: {track_id: position_index}
     """
     conn = auth_manager.get_connection()
@@ -414,7 +318,6 @@ def db_get_yesterday_context():
             ORDER BY included_at DESC
         ''', (cutoff.isoformat(),))
         
-        # If multiple runs, this might overwrite with most recent, which is intended.
         for r in c.fetchall():
             context[r[0]] = r[1]
     except:
@@ -463,10 +366,7 @@ def db_record_inclusion(tracks):
 # --- Track Fetching ---
 
 def get_mix_by_name(session, name_substr):
-    """
-    Search for a mix/playlist by partial name in favorites and user mixes.
-    Returns the first TidalPlaylist or Mix object found.
-    """
+    """Search for a mix/playlist by partial name."""
     # 1. Check Favorites
     try:
         for pl in session.user.favorites.playlists():
@@ -474,11 +374,8 @@ def get_mix_by_name(session, name_substr):
                 return pl
     except:
         pass
-        
     # 2. Check Mixes
     try:
-        # Check if session has mixes method (custom tidalapi or standard)
-        # Usually session.mixes() returns a list of Mix objects
         if hasattr(session, 'mixes'):
             mixes = session.mixes()
             for mix in mixes:
@@ -487,92 +384,52 @@ def get_mix_by_name(session, name_substr):
                     return mix
     except Exception as e:
         print(f"  - Error checking mixes: {e}")
-    
-    # Fallback to search? No, strictly personal mixes usually.
     return None
 
-def fetch_basic_tracks(session, config):
-    """Fetch tracks from configured basic sources."""
+def fetch_discovery_tracks(session):
+    """Fetch tracks from discovery sources (Adventure pool)."""
     tracks = []
     found_ids = set()
     
-    modes_conf = config.get("modes", {}).get("basic", {})
+    # Discovery Sources
+    targets = ["My Daily Discovery", "My New Arrivals"] + MIX_NAMES_GENERATED
     
-    def process_container(container, source_name):
+    print(f"Fetching discovery/adventure tracks from {len(targets)} sources...")
+    
+    for name in targets:
         try:
-            # TidalPlaylist or Mix
-            items = []
-            if hasattr(container, 'tracks') and callable(container.tracks):
-                items = container.tracks()
-            elif hasattr(container, 'items') and callable(container.items):
-                items = container.items()
-            
-            count = 0
-            for t in items:
-                if not hasattr(t, 'id'): continue
-                if t.id not in found_ids:
-                    t.fusion_source_pool = "Basic"
-                    t.fusion_source_mix = source_name
-                    tracks.append(t)
-                    found_ids.add(t.id)
-                    count += 1
-            if count > 0:
-                print(f"  - Added {count} tracks from '{source_name}'")
-        except Exception as e:
-            print(f"  - Error processing '{source_name}': {e}")
-
-
-    # 1. My Daily Discovery
-    if modes_conf.get("daily_discovery", True):
-        print("Fetching 'My Daily Discovery'...")
-        mix = get_mix_by_name(session, "My Daily Discovery")
-        if mix:
-            process_container(mix, "My Daily Discovery")
-        else:
-            print("  - Not found.")
-            
-    # 2. My New Arrivals
-    if modes_conf.get("new_arrivals", True):
-        print("Fetching 'My New Arrivals'...")
-        mix = get_mix_by_name(session, "My New Arrivals")
-        if mix:
-            process_container(mix, "My New Arrivals")
-        else:
-            print("  - Not found.")
-
-    # 3. My Mixes (1-8)
-    if modes_conf.get("my_mixes", True):
-        print("Fetching 'My Mix' collection...")
-        for name in MIX_NAMES_GENERATED:
             mix = get_mix_by_name(session, name)
             if mix:
-                process_container(mix, name)
-
+                items = []
+                if hasattr(mix, 'tracks') and callable(mix.tracks):
+                    items = mix.tracks()
+                elif hasattr(mix, 'items') and callable(mix.items):
+                    items = mix.items()
+                
+                count = 0
+                for t in items:
+                    if not hasattr(t, 'id'): continue
+                    if t.id not in found_ids:
+                        t.fusion_source_pool = "Adventure"
+                        t.fusion_source_mix = name # Preserve specific mix name
+                        tracks.append(t)
+                        found_ids.add(t.id)
+                        count += 1
+                if count > 0:
+                    print(f"  - Added {count} tracks from '{name}'")
+        except Exception as e:
+            print(f"  - Error scanning '{name}': {e}")
+            
     return tracks
 
 import re
 
 def deduplicate_remasters(tracks):
-    """
-    Deduplicate tracks where one is a 'Remaster' of another.
-    Rules:
-    1. Group by (Artist, Base Title).
-    2. 'Base Title' strips 'Remaster' info but KEEPS 'Remix' info.
-    3. Winner Logic:
-       - Prefer Remaster over Non-Remaster.
-       - Prefer Newest Year (if parsed from title).
-    """
+    """Deduplicate remasters. Returns filtered list."""
     if not tracks: return []
     
-    # Regex to find Remaster info: (2015 Remaster), - Remastered, [Remaster], etc.
-    # Exclude matches that contain "Remix" or "Mix" (unless specifically "Remastered Mix"?)
-    # Generally "Remix" implies distinct version.
-    
-    # Matches: parens/brackets/dash + content containing 'Remaster' + closing
-    # Capture year if possible.
     remaster_regex = re.compile(r"[\(\[\-]\s*(?:(\d{4})?\s*)?(?:Digital|Digitally|24-Bit|20\d\d)?\s*Remaster(?:ed)?\s*(?:(\d{4})?)[\)\]]?", re.IGNORECASE)
     
-    # Grouping
     groups = {}
     
     for t in tracks:
@@ -581,33 +438,18 @@ def deduplicate_remasters(tracks):
         if getattr(t, 'artist', None): artist = t.artist.name
         elif getattr(t, 'artists', None): artist = t.artists[0].name
         
-        # Determine Base Title
-        # Strip Remaster info
         match = remaster_regex.search(title)
-        
         base_title = title
         year_score = 0
         is_remaster = False
         
         if match:
-            # Check if "Remix" is in the full title but NOT in the match (or in match?)
-            # If "Remix" is in title, treat as unique unless the Remaster tag captures it?
-            # Our regex is specific to "Remaster".
-            
-            # If title has "Remix" elsewhere, it's a Remix. 
-            # E.g. "Song (Club Remix) (2015 Remaster)" -> Base: "Song (Club Remix)"
-            # This logic works.
-            
-            # Remove the match from title to get base
             base_title = remaster_regex.sub("", title).strip()
             is_remaster = True
-            
-            # Score
-            # Try to grab year from match grp 1 or 2
             y1, y2 = match.groups()
             if y1: year_score = int(y1)
             elif y2: year_score = int(y2)
-            else: year_score = 1 # Generic remaster > 0
+            else: year_score = 1
             
         key = (artist.lower(), base_title.lower())
         
@@ -619,7 +461,6 @@ def deduplicate_remasters(tracks):
             'title': title
         })
         
-    # Selection
     final_list = []
     removed_count = 0
     
@@ -628,405 +469,330 @@ def deduplicate_remasters(tracks):
             final_list.append(candidates[0]['track'])
             continue
             
-        # Conflict: Pick Winner
-        # Sort by: is_remaster (desc), year (desc)
-        # So True > False, 2020 > 2015 > 1 > 0
         candidates.sort(key=lambda x: (x['is_remaster'], x['year']), reverse=True)
-        
         winner = candidates[0]
         final_list.append(winner['track'])
         removed_count += (len(candidates) - 1)
-        
-        # Debug/Info if interesting
-        # if len(candidates) > 1:
-        #    print(f"  - Deduped '{key[1]}': Kept '{winner['title']}' vs {[c['title'] for c in candidates[1:]]}")
 
     if removed_count > 0:
         print(f"- Remaster Dedup: Removed {removed_count} older/duplicate versions.")
         
     return final_list
 
-def fetch_fusion_tracks(session, config, args):
+def fetch_and_generate_playlist(session, config, args):
     """
-    Fetch and interleave tracks for 'Fusion' mode (V2 Engine).
-    Implments strictly prioritized pipeline:
-    1. Hard Exclusions (Conflict 24h & Played)
-    2. Soft Exclusions (Conflict 24h)
-    3. Freq Cap (>25% monthly)
-    4. Mirror-Image Rotation
-    5. Weighted Variety Shuffle
+    Main Fusion Generation Pipeline.
     """
-    fusion_conf = config.get("modes", {}).get("fusion", {})
-    
     # --- 1. Limit / Duration Logic ---
-    limit_type = getattr(args, 'limit_type', None) or fusion_conf.get("limit_type", "time")
-    limit_val = getattr(args, 'limit_value', None)
+    limit_type = config.get("limit_type", "time")
+    limit_val = config.get("limit_value", 180)
     
-    if args.limit and args.limit != 150: # Legacy override
+    # CLI Overrides
+    if args.limit: 
          limit_type = "count"
          limit_val = args.limit
          
-    if not limit_val:
-        limit_val = 180 if limit_type == "time" else 150
-
     if limit_type == "time":
-        # Estimate: Avg 3.5m (210s) -> Limit
-        limit = int((limit_val * 60) / 210)
-        print(f"Fusion V2: Targeting {limit_val}m (~{limit} tracks)...")
+        limit = int((limit_val * 60) / 210) # Approx
+        print(f"Fusion: Targeting {limit_val}m (~{limit} tracks)...")
     else:
         limit = limit_val
-        print(f"Fusion V2: Targeting {limit} tracks...")
+        print(f"Fusion: Targeting {limit} tracks...")
 
     # --- 2. Pipeline Data Fetching ---
     print("- Fetching Context Data (History/Exclusions)...")
-    history_stats = db_get_history_stats(30) # 30 days stats
-    yesterday_ctx = db_get_yesterday_context() # Last ~30h inclusions
-    recent_plays = db_get_recent_plays(24)     # Actual plays last 24h
+    history_stats = db_get_history_stats(30)
+    yesterday_ctx = db_get_yesterday_context()
+    recent_plays = db_get_recent_plays(24)
     
     # --- 3. Candidate Fetching ---
-    favorites = []
+    # --- 3. Candidate Fetching ---
+    print("- Fetching Tracks...")
+    
+    # Favorites (Base for Comfort/Habit)
+    favorites_map = {}
     try:
-        favorites = session.user.favorites.tracks()
-        for t in favorites: 
-            t.fusion_source_pool = "Comfort"
-            t.fusion_source_mix = "Favourites"
-    except: print("- Error fetching Favorites")
+        favs = session.user.favorites.tracks()
+        print(f"  - Found {len(favs)} Favorites")
+        for t in favs:
+            favorites_map[t.id] = t
+    except Exception as e:
+        print(f"- Error fetching Favorites: {e}")
 
-    history = [] # API limitation means empty usually
+    # Discovery (Adventure) - From Mixes
+    adventure_candidates = fetch_discovery_tracks(session)
     
-    discovery = []
-    # Force Basic sources for discovery bucket
-    temp_conf = {"modes": {"basic": {"daily_discovery": True, "new_arrivals": True, "my_mixes": True}}}
-    discovery = fetch_basic_tracks(session, temp_conf)
-    for t in discovery: t.fusion_source_pool = "Adventure"
-
-    all_candidates = favorites + history + discovery
-    unique_candidates_raw = {t.id: t for t in all_candidates}.values()
-    
-    # Run Remaster Deduplication
-    unique_candidates = deduplicate_remasters(unique_candidates_raw)
-    
-    print(f"- Total Candidates: {len(unique_candidates)}")
-
-    # --- 4. Exclusion & Scoring Engine ---
-    pool_fresh = []
-    pool_soft_conflict = [] # Included yesterday but NOT played
-    pool_hard_conflict = [] # Included yesterday AND played
-    
-    report_excluded_freq = 0
-    report_excluded_mymix = 0
-    
-    now = datetime.now(timezone.utc)
-    
-    for t in unique_candidates:
-        tid = str(t.id)
-        
-        # A. Freq Cap: Max 25% monthly appearance (approx 7-8 times in 30 days)
-        stats = history_stats.get(tid, {'count': 0})
-        if stats['count'] > 8: # >~25% of 30 days
-            report_excluded_freq += 1
-            continue
-            
-        # B. My Mix Variety: Exclude if from "My Mix" and included yesterday
-        # strict variety for discovery sources
-        src_mix = getattr(t, 'fusion_source_mix', '')
-        if ("My Mix" in src_mix or "Discovery" in src_mix) and tid in yesterday_ctx:
-            report_excluded_mymix += 1
-            continue
-            
-        # C. Classification
-        if tid in yesterday_ctx:
-            if tid in recent_plays:
-                pool_hard_conflict.append(t)
-            else:
-                pool_soft_conflict.append(t)
+    # Deduplicate Adventure: Remove if in Favorites (Definition of Adventure = New/Discovery)
+    final_adventure = []
+    skipped_fav = 0
+    for t in adventure_candidates:
+        if t.id not in favorites_map:
+            final_adventure.append(t)
         else:
-            # Fresh Track calculation
-            # Score = (Days Since Last * (1 - MthFreq))
-            days_since = 30
-            if stats['count'] > 0:
-                delta = now - stats['last_included']
-                days_since = max(0.1, delta.days)
+            skipped_fav += 1
+    
+    print(f"  - Adventure: {len(final_adventure)} tracks (excluded {skipped_fav} already in favorites)")
+
+    # Partition Favorites into Comfort vs Habit
+    # Comfort: > 6 months old
+    # Habit: <= 6 months old (Recent Favorites)
+    
+    comfort_candidates = []
+    habit_candidates = []
+    
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=180) # 6 months
+    
+    for t in favorites_map.values():
+        val = getattr(t, 'user_date_added', None) or getattr(t, 'date_added', None)
+        
+        # Date Parsing
+        added = None
+        if val:
+            if isinstance(val, datetime):
+                added = val
+            elif isinstance(val, str):
+                try: 
+                    added = datetime.fromisoformat(val.replace('Z', '+00:00'))
+                except: 
+                    pass
+        
+        is_habit = False # Default to Comfort if no date
+        if added:
+             if added.tzinfo is None:
+                 added = added.replace(tzinfo=timezone.utc)
+             if added > cutoff_date:
+                 is_habit = True
+        
+        if is_habit:
+            t.fusion_source_pool = "Habit"
+            t.fusion_source_mix = "Recent Favorites"
+            habit_candidates.append(t)
+        else:
+            t.fusion_source_pool = "Comfort"
+            t.fusion_source_mix = "Favorites"
+            comfort_candidates.append(t)
             
-            monthly_freq = stats['count'] / 30.0
-            score = days_since * (1.0 - monthly_freq)
-            t.fusion_score = score
-            pool_fresh.append(t)
+    print(f"  - Comfort (Fav > 6mo): {len(comfort_candidates)}")
+    print(f"  - Habit (Fav < 6mo): {len(habit_candidates)}")
 
-    print(f"- Exclusion Report:")
-    print(f"  - Freq Cap (>25%): {report_excluded_freq} removed")
-    print(f"  - My Mix Strict: {report_excluded_mymix} removed")
-    print(f"  - Hard Conflicts (Play+Include): {len(pool_hard_conflict)}")
-    print(f"  - Soft Conflicts (Include Only): {len(pool_soft_conflict)}")
-    print(f"  - Fresh Candidates: {len(pool_fresh)}")
+    # Deduplicate Remasters for each pool
+    comfort_candidates = deduplicate_remasters(comfort_candidates)
+    habit_candidates = deduplicate_remasters(habit_candidates)
+    final_adventure = deduplicate_remasters(final_adventure)
+    
+    # --- 4. Exclusion & Scoring ---
+    
+    def filter_candidates(pool, pool_name):
+        valid = []
+        excluded_rpt = 0
+        excluded_freq = 0
+        
+        for t in pool:
+            tid = str(t.id)
+            
+            # 1. Global Exclude Days (Default 7)
+            if tid in history_stats:
+                last_inc = history_stats[tid]['last_included']
+                if (datetime.now(timezone.utc) - last_inc).days < config.get("exclude_days", 7):
+                    excluded_rpt += 1
+                    continue
+            
+            # 2. Freq Cap: Max 8 times in 30 days
+            stats = history_stats.get(tid, {'count': 0})
+            if stats['count'] > 8:
+                excluded_freq += 1
+                continue
+                
+            # 3. Soft/Hard Conflict (Yesterday Context)
+            if tid in yesterday_ctx:
+                excluded_rpt += 1
+                continue
+                
+            valid.append(t)
+        
+        # log details
+        # print(f"  - {pool_name} details: {len(valid)} valid, {excluded_rpt} recent, {excluded_freq} freq")
+        return valid
 
-    # --- 5. Selection (Weighted Variety Shuffle) ---
+    print("- Filtering Candidates (Exclusions)...")
+    comfort_valid = filter_candidates(comfort_candidates, "Comfort")
+    habit_valid = filter_candidates(habit_candidates, "Habit")
+    adventure_valid = filter_candidates(final_adventure, "Adventure")
+    
+    print(f"  - Valid Pools: Comfort={len(comfort_valid)}, Habit={len(habit_valid)}, Adventure={len(adventure_valid)}")
+
+    # --- 5. Selection (40/30/30) ---
     final_selection = []
     
-    # Sort fresh pool by score (descending) to prioritize, then weighted random?
-    # Or just Weighted Sample.
-    # Let's use weighted choices for the "bulk" of the playlist.
+    target_total = limit
+    target_comfort = int(target_total * 0.40)
+    target_habit = int(target_total * 0.30)
+    target_adventure = int(target_total * 0.30)
     
-    # We need to fill `limit` tracks.
-    # Priority: Fresh -> Soft -> Hard (if needed)
+    # Adjust rounding
+    diff = target_total - (target_comfort + target_habit + target_adventure)
+    target_comfort += diff 
     
-    needed = limit
-    
-    # Select from Fresh
-    if pool_fresh:
-        # Sort by score desc for deterministic quality, or weighted random?
-        # User asked for "Weighted Variety Shuffle"
-        # We can shuffle AND weight? 
-        # Let's take top N based on score with some randomness
-        pool_fresh.sort(key=lambda x: x.fusion_score, reverse=True)
-        
-        # Take top 3x limit to shuffle from?
-        # Or just take top `needed`?
-        # Provide some randomness: Top 50% are highly likely
-        count_fresh = min(len(pool_fresh), needed)
-        
-        # Simple approach for V2: Take top scorers
-        selected_fresh = pool_fresh[:count_fresh]
-        
-        # Shuffle them to ensure not just boring order
-        random.shuffle(selected_fresh)
-        final_selection.extend(selected_fresh)
-        needed -= len(selected_fresh)
+    print(f"- Selection Targets: Comfort={target_comfort}, Habit={target_habit}, Adventure={target_adventure}")
 
-    # Backfill Soft
-    if needed > 0 and pool_soft_conflict:
-        print(f"- Backfilling {needed} from Soft Conflicts (Included yesterday, not played)...")
-        random.shuffle(pool_soft_conflict)
-        take = min(len(pool_soft_conflict), needed)
-        # Force these to bottom later?
-        # For now add to selection, we will rotate/position later.
-        final_selection.extend(pool_soft_conflict[:take])
-        needed -= take
+    # A. Select Comfort
+    random.shuffle(comfort_valid)
+    selected_comfort = comfort_valid[:target_comfort]
+    
+    # B. Select Habit
+    random.shuffle(habit_valid)
+    selected_habit = habit_valid[:target_habit]
+    
+    # C. Select Adventure
+    # Logic: "My New Arrivals" max 1/7 total
+    max_new_arrivals = int(target_total // 7)
+    
+    adv_new_arrivals = [t for t in adventure_valid if "My New Arrivals" in getattr(t, 'fusion_source_mix', '')]
+    adv_others = [t for t in adventure_valid if "My New Arrivals" not in getattr(t, 'fusion_source_mix', '')]
+    
+    random.shuffle(adv_new_arrivals)
+    selected_adv_new = adv_new_arrivals[:max_new_arrivals]
+    
+    rem_adv_slots = target_adventure - len(selected_adv_new) # e.g. 15 - 7 = 8
+    
+    random.shuffle(adv_others)
+    if rem_adv_slots > 0:
+        selected_adv_others = adv_others[:rem_adv_slots]
+    else:
+        selected_adv_others = []
+    
+    selected_adventure = selected_adv_new + selected_adv_others
+    
+    # D. Backfill
+    current_selected = selected_comfort + selected_habit + selected_adventure
+    if len(current_selected) < target_total:
+        needed = target_total - len(current_selected)
+        print(f"  - Underflow: need {needed} more. Backfilling...")
         
-    # Backfill Hard
-    if needed > 0 and pool_hard_conflict:
-         print(f"- Backfilling {needed} from Hard Conflicts (Avoid if possible!)...")
-         random.shuffle(pool_hard_conflict)
-         take = min(len(pool_hard_conflict), needed)
-         final_selection.extend(pool_hard_conflict[:take])
-         needed -= take
+        used_ids = {t.id for t in current_selected}
+        remaining = []
+        for t in (comfort_valid + habit_valid + adventure_valid):
+            if t.id not in used_ids:
+                remaining.append(t)
+        random.shuffle(remaining)
+        current_selected.extend(remaining[:needed])
+        
+    final_selection = current_selected
 
     # --- 6. Mirror-Image Rotation ---
-    # "If track was at Index i, move to Total - i"
-    # We must construct a list of size `len(final_selection)`
-    
-    # First, separate tracks that NEED rotation vs those that are free
-    # Tracks in `yesterday_ctx` need specific slots if possible.
-    
     total_slots = len(final_selection)
     result_array = [None] * total_slots
-    
     report_inverted = 0
     
-    # A. Place Rotated Tracks
     pending_placement = []
     
     for t in final_selection:
         tid = str(t.id)
         if tid in yesterday_ctx:
             old_idx = yesterday_ctx[tid]
-            # Mirror logic: new_idx = (Total - 1) - (normalized old position?)
-            # Old position might have been in a list of size 100, now size 150.
-            # Map percentage? Or absolute? User said: "Position_Today = (Total - 1) - Position_Yesterday"
-            # Assuming absolute indices.
-            
-            # Map old index roughly to current scale if different?
-            # User instruction implies strict inversion.
-            # But if yesterday.total != today.total, index might be out of bounds.
-            # Let's safety clamp.
-            
-            # If simplistic:
             new_idx = (total_slots - 1) - old_idx
-            
-            # Clamp
             new_idx = max(0, min(total_slots - 1, new_idx))
             
-            # Conflict in slot?
             if result_array[new_idx] is None:
                 result_array[new_idx] = t
                 report_inverted += 1
             else:
-                # Slot taken, downgrade to free pool
                 pending_placement.append(t)
         else:
             pending_placement.append(t)
 
-    # B. Fill Empty Slots with Pending
-    # Shuffle pending to mix sources
     random.shuffle(pending_placement)
-    
     for i in range(total_slots):
-        if result_array[i] is None:
-            if pending_placement:
-                result_array[i] = pending_placement.pop(0)
+        if result_array[i] is None and pending_placement:
+            result_array[i] = pending_placement.pop(0)
 
-    # Clean up (remove Nones if we ran out of tracks, though logic implies match)
     final_list = [t for t in result_array if t is not None]
+    print(f"- Rotation Report: Inverted {report_inverted} track positions.")
+
+    # --- 7. Vibe Check (Skip for now to keep simple/fast) ---
     
-    print(f"- Rotation Report: Inverted {report_inverted} track positions based on yesterday.")
-
-    # --- 7. Vibe Check (BPM) ---
-    # Same as before, but only swap adjacent if neither is a "Locked" rotation? 
-    # Logic didn't specify locking. Let's apply smoothing but be gentle.
-    print("- Applying Vibe Check (BPM Smoothing)...")
-    swaps = 0
-    for i in range(len(final_list) - 1):
-        bpm1 = getattr(final_list[i], 'bpm', 0)
-        bpm2 = getattr(final_list[i+1], 'bpm', 0)
-        
-        # Ensure int and not None
-        try:
-            val1 = int(bpm1) if bpm1 is not None else 0
-            val2 = int(bpm2) if bpm2 is not None else 0
-        except:
-            val1, val2 = 0, 0
-            
-        if abs(val1 - val2) > 30 and val1 > 0 and val2 > 0:
-            # Try simple swap with neighbor if better?
-            # Or scan ahead. keeping it simple for V2.
-            pass
-
     # --- 8. Time Enforcement ---
     if limit_type == "time":
-        limit_val = limit_val or 180
         target_sec = limit_val * 60
         tolerance = 180
-        
         current_dur = sum(getattr(t, 'duration', 0) for t in final_list)
         
         while current_dur < (target_sec - tolerance) and pool_fresh:
-            t = pool_fresh.pop(0) # Take next best fresh
-            final_list.append(t)
-            current_dur += getattr(t, 'duration', 0)
-            
+             t = pool_fresh.pop(0)
+             final_list.append(t)
+             current_dur += getattr(t, 'duration', 0)
+             
         while current_dur > (target_sec + tolerance) and len(final_list) > 1:
-            # Remove from end (likely backfilled conflicts)
-            rem = final_list.pop()
-            current_dur -= getattr(rem, 'duration', 0)
-            
+             rem = final_list.pop()
+             current_dur -= getattr(rem, 'duration', 0)
+             
         print(f"- Final Duration: {int(current_dur/60)}m {int(current_dur%60)}s")
 
-    # --- 9. Final Logging ---
+    # --- 9. Final Logging & DB ---
     db_record_inclusion(final_list)
+    print(f"Generation Complete: {len(final_list)} tracks.")
     
-    print(f"Fusion V2 Generation Complete: {len(final_list)} tracks.")
     return final_list
 
-def log_generation(tracks, mode, debug=False):
-    """
-    Log the generated tracks.
-    If debug: Print detailed info (captured by TeeLogger).
-    If normal: Write to standard log file in config dir.
-    """
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+def log_generation_result(tracks):
+    """Log to console + file (handled by Tee)."""
+    print("\n" + "="*40)
+    print(f"GENERATION DETAILS ({datetime.now().strftime('%H:%M:%S')})")
+    print("="*40)
     
-    if debug:
-        # Debug Mode: Output detailed info to stdout (captured by TeeLogger)
-        print("\n\n" + "="*40)
-        print(f"GENERATION DETAILS ({timestamp})")
-        print("="*40)
-        for i, track in enumerate(tracks, 1):
-            artist = getattr(track, 'artist', None)
-            if artist:
-                artist_name = artist.name
-            else:
-                artists = getattr(track, 'artists', [])
-                artist_name = ", ".join([a.name for a in artists]) if artists else "Unknown Artist"
-            
-            title = getattr(track, 'name', 'Unknown Title')
-            bpm = getattr(track, 'bpm', 'N/A')
-            
-            print(f"{i}. {artist_name} - {title} [BPM: {bpm}]")
-            print(f"   Source Pool: {getattr(track, 'fusion_source_pool', 'Basic/Unknown')}")
-            print(f"   Source Mix: {getattr(track, 'fusion_source_mix', 'Unknown')}")
-            print(f"   ID: {track.id}")
-            if hasattr(track, 'album'):
-                 print(f"   Album: {track.album.name}")
-            print("")
-            
-    else:
-        # Standard Mode: Write concise log to file
-        filename = auth_manager.CONFIG_DIR / f"fusion-log-{timestamp}.txt"
-        try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(f"Tidal Fusion Generation Log\n")
-                f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Mode: {mode}\n")
-                f.write(f"Total Tracks: {len(tracks)}\n")
-                f.write("-" * 40 + "\n")
-                
-                for i, track in enumerate(tracks, 1):
-                    artist = getattr(track, 'artist', None)
-                    if artist:
-                        artist_name = artist.name
-                    else:
-                        artists = getattr(track, 'artists', [])
-                        artist_name = ", ".join([a.name for a in artists]) if artists else "Unknown Artist"
-                    
-                    title = getattr(track, 'name', 'Unknown Title')
-                    bpm = getattr(track, 'bpm', 'N/A')
-                    src_pool = getattr(track, 'fusion_source_pool', 'Unknown')
-                    src_mix = getattr(track, 'fusion_source_mix', 'Unknown')
-                    
-                    f.write(f"{i}. {artist_name} - {title} [BPM: {bpm}] (Source: {src_pool} / {src_mix})\n")
-                    
-            print(f"Log generated: {filename}")
-        except Exception as e:
-            print(f"Error writing log: {e}")
+    for i, track in enumerate(tracks, 1):
+        artist = getattr(track, 'artist', None)
+        if artist:
+            artist_name = artist.name
+        else:
+            artists = getattr(track, 'artists', [])
+            artist_name = ", ".join([a.name for a in artists]) if artists else "Unknown Artist"
+        
+        title = getattr(track, 'name', 'Unknown Title')
+        bpm = getattr(track, 'bpm', 'N/A')
+        src_mix = getattr(track, 'fusion_source_mix', 'Unknown')
+        
+        print(f"{i}. {artist_name} - {title} [BPM: {bpm}]")
+        print(f"   Source: {src_mix}")
+        # print(f"   ID: {track.id}")
+        print("")
+
 
 # --- Playlist Management ---
 
 def retry_api_call(func, retries=3, delay=2, backoff=2):
-    """Retry a function call with exponential backoff."""
+    """Retry a function call."""
     for i in range(retries + 1):
         try:
             return func()
         except Exception as e:
             if i == retries:
-                print(f"  - API Limit/Error reached. Given up after {retries} retries. Error: {e}")
+                print(f"  - API Error: {e}. Given up.")
                 raise e
-            
             sleep_time = delay * (backoff ** i)
-            print(f"  - API Error: {e}. Retrying in {sleep_time}s... ({i+1}/{retries})")
+            print(f"  - API Error: {e}. Retrying in {sleep_time}s...")
             time.sleep(sleep_time)
 
 def update_playlist(session, args, tracks):
-    """
-    Update the user's playlist.
-    - If -n/--new (or default): Overwrite (Empty & Add)
-    - If -a/--append: Append
-    """
+    """Update user playlist."""
     if not tracks:
         print("No tracks generated.")
         return
 
-    # Extract IDs (tidalapi expects IDs, usually as list)
     track_ids = [t.id for t in tracks]
-
-    # Load retries from config
     config = load_config()
     max_retries = config.get("max_retries", 3)
-
     user = session.user
-    playlist_name = "Tidal Fusion"
+    playlist_name = DEFAULT_PLAYLIST_NAME
     
-    print(f"Searching for playlist '{playlist_name}'...")
+    print(f"Updating Playlist: '{playlist_name}'...")
     target_playlist = None
     
-    # 1. Find Playlist
     try:
-        # Check created playlists
         for pl in user.playlists():
             if pl.name == playlist_name:
                 target_playlist = pl
                 break
-        
-        # Check favorites if not found
         if not target_playlist:
             for pl in user.favorites.playlists():
                 if pl.name == playlist_name:
@@ -1036,10 +802,7 @@ def update_playlist(session, args, tracks):
         print(f"Error searching playlists: {e}")
         return
 
-    # 2. Update or Create
     if target_playlist:
-        print(f"Found existing playlist: {target_playlist.name} (ID: {target_playlist.id})")
-        
         if args.append:
              print(f"Appending {len(tracks)} tracks...")
              try:
@@ -1049,117 +812,79 @@ def update_playlist(session, args, tracks):
              except Exception:
                  print("- Failed to append tracks.")
         else:
-            # Default: New / Overwrite
-            print(f"Reseting '{playlist_name}' with {len(tracks)} tracks...")
+            print(f"Resetting playlist...")
             try:
                 # Optimized Clear
-                current_tracks = target_playlist.tracks()
-                if current_tracks:
-                    print(f"- Found {len(current_tracks)} existing tracks. Attempting to clear...")
-                    try:
-                        if hasattr(target_playlist, 'clear'):
-                            retry_api_call(lambda: target_playlist.clear(), retries=max_retries)
-                            print("- Called .clear()")
-                        else:
-                             raise AttributeError("No clear method")
-                    except Exception:
-                        print(f"- .clear() failed or missing. Using remove_by_id loop...")
-                        pass 
+                try:
+                    retry_api_call(lambda: target_playlist.clear(), retries=max_retries)
+                except:
+                    # Fallback delete/recreate
+                    target_playlist.delete()
+                    time.sleep(1)
+                    target_playlist = user.create_playlist(playlist_name, "")
                 
-                print("- Playlist cleared.")
-                
-                # Add
                 retry_api_call(lambda: target_playlist.add(track_ids), retries=max_retries)
-                print("- Added new tracks.")
+                print("- Playlist updated.")
                 history_log_tracks(tracks)
                 
             except Exception as e:
                 print(f"Failed to reset playlist: {e}")
-                print("Fallback: Deleting and recreating...")
-                try:
-                    retry_api_call(lambda: target_playlist.delete(), retries=max_retries)
-                    time.sleep(1) # Safety
-                    target_playlist = retry_api_call(lambda: user.create_playlist(playlist_name, ""), retries=max_retries)
-                    retry_api_call(lambda: target_playlist.add(track_ids), retries=max_retries)
-                    print("- Fallback successful.")
-                    history_log_tracks(tracks)
-                except Exception as e2:
-                    print(f"- Fallback failed: {e2}")
-
     else:
-        print(f"Playlist '{playlist_name}' not found. Creating...")
+        print(f"Creating new playlist '{playlist_name}'...")
         try:
              target_playlist = retry_api_call(lambda: user.create_playlist(playlist_name, ""), retries=max_retries)
              retry_api_call(lambda: target_playlist.add(track_ids), retries=max_retries)
-             print(f"Created '{playlist_name}' with {len(tracks)} tracks.")
+             print(f"- Created with {len(tracks)} tracks.")
              history_log_tracks(tracks)
         except Exception as e:
             print(f"Failed to create playlist: {e}")
 
-
-# Logger
-class TeeLogger(object):
-    def __init__(self, filename):
-        self.terminal = sys.stdout
-        self.log = open(filename, "a", encoding="utf-8")
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
-        self.log.flush()
-
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
+# --- Main ---
 
 def main():
-    # Ensure DB and Tables exist, migrate if needed
     auth_manager.init_db()
+    
+    # 1. Setup Logging (Immediate)
+    log_file = setup_logging()
     
     parser = argparse.ArgumentParser(description="Tidal Fusion", add_help=False)
     
-    # Actions
     mode_group = parser.add_mutually_exclusive_group()
-    # Removed --login argument
-    mode_group.add_argument('-n', '--new', action='store_true', help="Overwrite (empty & fill) playlist (Default)")
-
+    mode_group.add_argument('-n', '--new', action='store_true', help="Overwrite playlist (Default)")
     mode_group.add_argument('-a', '--append', action='store_true', help="Append to playlist")
     mode_group.add_argument('-c', '--config', action='store_true', help="Configure settings")
     
-    # History Actions
-    mode_group.add_argument('--show-history', nargs='?', const=20, type=int, metavar='N', help="Show last N tracks (default 20)")
-    mode_group.add_argument('--clear-history', action='store_true', help="Clear playback history")
+    mode_group.add_argument('--show-history', nargs='?', const=20, type=int, metavar='N', help="Show history")
+    mode_group.add_argument('--clear-history', action='store_true', help="Clear history")
 
-    # Help (Standalone)
     parser.add_argument('-h', '--help', action='store_true', help="Show help")
     
-    # Modifiers
-    parser.add_argument('--mode', type=str, help="Select mode (basic, fusion)")
-    parser.add_argument('-m', '--limit', type=int, default=150, help="Track limit (Fusion mode)")
-    parser.add_argument('--exclude-days', type=int, help="Exclude tracks played in last N days")
-    parser.add_argument('--max-repeats', type=int, help="Max plays allowed in anti-repeat window")
-    parser.add_argument('-d', '--debug', action='store_true', help="Enable debug logging")
-
+    # Config Overrides
+    parser.add_argument('-m', '--limit', type=int, help="Track limit override")
+    parser.add_argument('--exclude-days', type=int, help="Override exclude days")
+    
+    # Note: --debug, --mode REMOVED
+    
     args = parser.parse_args()
-    
-    # Setup Logging if Debug
-    # Setup Logging if Debug
-    if args.debug:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_dir = auth_manager.get_log_dir()
-        log_file = log_dir / f"fusion-debug-{timestamp}.txt"
-        try:
-            sys.stdout = TeeLogger(log_file)
-            print(f"Debug logging enabled. Capturing output to: {log_file}")
-            print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            print("-" * 40)
-        except Exception as e:
-            print(f"Failed to setup logging: {e}")
-
-    # Load Config
     config = load_config()
+
+    # Apply overrides
+    if args.exclude_days is not None: config["exclude_days"] = args.exclude_days
     
-    # Handle History Commands
+    if args.help:
+        print("Tidal Fusion Help")
+        print("  -n, --new      : Create/Reset playlist (Default)")
+        print("  -a, --append   : Append to playlist")
+        print("  -c, --config   : Configure settings")
+        print("  -m, --limit    : Set max tracks limit")
+        print("  --show-history : View playback history")
+        return
+
+    # Handle Actions
+    if args.config:
+        configure_main(config)
+        return
+        
     if args.show_history is not None:
         history_show(args.show_history)
         return
@@ -1168,74 +893,15 @@ def main():
         history_clear()
         return
 
-    # Config overrides from CLI
-    if args.exclude_days is not None:
-        if "fusion" not in config["modes"]: config["modes"]["fusion"] = {}
-        config["modes"]["fusion"]["exclude_days"] = args.exclude_days
-    
-    if args.max_repeats is not None:
-        if "fusion" not in config["modes"]: config["modes"]["fusion"] = {}
-        config["modes"]["fusion"]["max_repeats"] = args.max_repeats
-
-    # Help
-    if args.help:
-        if args.new:
-            print("Help: -n / --new")
-            print("  Resets (empties) the target playlist and fills it with new tracks.")
-            print("  This is the default action if no other action is specified.")
-        elif args.append:
-             print("Help: -a / --append")
-             print("  Adds generated tracks to the existing playlist instead of reseting it.")
-        elif args.config:
-             print("Help: -c / --config")
-             print("  Opens the main configuration menu.")
-        else:
-            print("Tidal Fusion Help")
-            print("  -n, --new      : Create/Reset playlist (Default)")
-            print("  -a, --append   : Append to playlist")
-            print("  -c, --config   : Configure settings")
-            print("  --mode <name>  : Select mode (basic, fusion)")
-            print("  -m, --limit    : Set max tracks (Fusion)")
-            print("  --exclude-days : Anti-Repeat check window (days)")
-            print("  --max-repeats  : Max plays allowed in window")
-            print("  --show-history : View playback history")
-            print("  --clear-history: Clear playback history")
-            print("  -d, --debug    : Enable debug logging")
-        return
-    
-    # 1. Config
-    if args.config:
-        configure_main(config)
-        return
-
-    # 3. Generation (New or Append)
-    # Default is New if neither specified
-    action_new = True
-    if args.append:
-        action_new = False
-    
-    # Determine Mode
-    mode = args.mode if args.mode else config.get('default_mode', 'basic')
-    
+    # Default: Run Generation
     session = auth_manager.get_session()
     if not session:
         print("Please run 'tidal-fusion -c' and select 'Run Authentication' first.")
         return
 
-    tracks = []
-    if args.mode == "basic" or (config.get("default_mode") == "basic" and not args.mode):
-        print("Mode: Basic")
-        tracks = fetch_basic_tracks(session, config)
-    else:
-        print("Mode: Fusion")
-        # Anti-Repeat criteria printed inside function
-        tracks = fetch_fusion_tracks(session, config, args)
-        
-    # Shuffle for basic (Fusion does its own interleaving)
-    if mode == 'basic':
-        random.shuffle(tracks)
-        
-    log_generation(tracks, mode, args.debug)
+    tracks = fetch_and_generate_playlist(session, config, args)
+    
+    log_generation_result(tracks)
     update_playlist(session, args, tracks)
 
 if __name__ == "__main__":

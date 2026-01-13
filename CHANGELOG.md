@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.0] - 2026-01-12
+
+### Added
+- **TIDAL Compliance**:
+    - Mandatory branding and links to logs and configuration menus.
+    - "Not Endorsed by TIDAL" disclaimer to logs and UI.
+- **Generation Constraints**:
+    - "My New Arrivals" tracks now limited to 1/7th of the total playlist.
+
+### Changed
+- **Generation Logic**:
+    - Restored 40/30/30 split between Comfort (Old Favorites), Habit (Recent Favorites), and Adventure (Discovery Mixes).
+    - Adventure tracks now strictly exclude any tracks already in user Favorites.
+- **Fallback Strategy**:
+    - Improved underflow handling to spill over between pools if a specific category (e.g. Comfort) is low on tracks.
+
 ## [2.0.0] - 2025-12-27
 
 ### Added
